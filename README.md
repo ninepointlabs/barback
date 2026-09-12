@@ -11,10 +11,13 @@ shelves.
 The drawer is **storage, not management**. It renders what it is told to
 render and nothing more.
 
-- **Empty drawer draws nothing at all.** Zero residents, zero bar space.
+- **An empty drawer is one small dimmed chip.** Click it and pick a widget —
+  that is the whole of the empty state.
 - **Collapsed it is one glyph and a count.** Hover expands the row of
   residents along the bar axis, the same 600ms feel as `omarchy.tray`.
 - **Click pins it open**, `Esc` closes, and clicking away closes it too.
+- **Right-click for the menu**: eject a resident, *Add a widget…*, *Manage in
+  Barkeep…*, *Eject all*.
 - **Vertical bars** get `vertical: true` passed through, so hosted widgets
   pick their own compact forms for free.
 
@@ -37,11 +40,63 @@ barback add com.omastorm.radar
 with an atomic rename. It does not enable the plugin, touch the bar layout, or
 restart the shell.
 
+That last step is optional: once the chip is on the bar, clicking it opens the
+picker and you can fill the drawer from there.
+
+## Add a widget
+
+Two ways in:
+
+- **Click the chip while the drawer is empty.** An empty drawer has nothing to
+  expand, so the click that would pin it opens the picker instead.
+- **Right-click → *Add a widget…*** once the drawer has something in it, because
+  then the chip's own click is the pin gesture.
+
+It lists every eligible installed third-party bar widget by display name, with
+the plugin id beside it. Picking one runs `barback add` — the picker has no
+writer of its own — which takes the widget off the bar, **keeps the settings it
+had there**, and parks it in the drawer.
+
+What it will not offer you, and why:
+
+| Excluded | Why |
+|---|---|
+| hidden `.`-directories | `omarchy plugin remove` backups and clone staging dirs are not plugins any more |
+| `omarchy.*` | stock widgets stay on the bar |
+| Barback itself | a drawer cannot hold itself |
+| another drawer | `barWidget.hostsBarWidgets`, or a clone of Barback: nested drawers are out of scope for v1 |
+| anything already in the drawer | it is already in the drawer |
+| service- or panel-only plugins | nothing to draw on a bar |
+| a missing or unsafe `entryPoints.barWidget`, or one whose file is gone | the shell could not load it either |
+| a manifest the shell would reject | missing `name`/`version`, empty `kinds`, bad `defaultSection` |
+| anything in `disabledPlugins[]` | you turned it off |
+
+The picker and `barback add` share one rule set, so the picker can never offer
+something the CLI then refuses.
+
+### The `hostsBarWidgets` marker
+
+Barback's own manifest declares it:
+
+```json
+{ "barWidget": { "hostsBarWidgets": true } }
+```
+
+It means "this widget hosts other bar widgets", and it is how Barback recognises
+a drawer — including a clone of itself, which `omarchy plugin clone` gives a new
+id but the same manifest. A drawer is never offered as a resident and never
+mounted as one. If you write another drawer-shaped widget, set it.
+
+Both of these — the visible empty chip and the picker itself — are deliberate
+departures from the design spec, authorised by Tim on 2026-09-12. See
+[DEVIATIONS.md](DEVIATIONS.md).
+
 ## The CLI
 
 ```
 barback list [--json]                 residents, their ids, and whether each resolved
-barback add <plugin-id> [--compact]   park it: drop its layout entry, add to items[]
+barback add <plugin-id> [--compact]   park it: drop its layout entry, keep its settings,
+                                      add to items[]
 barback remove <plugin-id>            eject: back off the bar, still installed
 barback clear                         eject everything
 barback probe [--json]                re-check each resident resolves to a live entry point
@@ -69,10 +124,11 @@ never delete anything from disk.
 
 ## State
 
-Barback's own `shell.json` entry is the only home its residents have. They
-have no entry of their own in `bar.layout`, and their settings live inside
-Barback's entry, seeded from the plugin's `manifest.barWidget.defaults` the
-first time it is parked.
+Barback's own `shell.json` entry is the only home its residents have. They have
+no entry of their own in `bar.layout`, and their settings live inside Barback's
+entry. On the first add the plugin's `manifest.barWidget.defaults` are the
+floor, and anything the widget actually had set in its own layout entry wins, so
+moving a configured widget off the bar does not reset it.
 
 ```json
 {
@@ -127,7 +183,10 @@ QML itself, the same way `shell.qml` does:
    `manifest` — so the catalogue is rebuilt rather than asked for. Plugins are
    keyed by **manifest id, not folder name**; several plugins in the wild
    disagree on those. Dot-directories are skipped, which is what keeps an
-   `omarchy plugin remove` backup from ever being mounted.
+   `omarchy plugin remove` backup from ever being mounted. The same scan checks
+   that each `entryPoints.barWidget` is really a file on disk, and reads
+   `disabledPlugins[]` out of `shell.json`, because both decide what the picker
+   may offer.
 2. Read `entryPoints.barWidget` from the resident's manifest and load it.
 3. Inject `bar`, `moduleName` and `settings` — exactly the three properties
    `Bar.qml`'s `ModuleSlot` injects into every widget slot.
@@ -174,17 +233,23 @@ tests/run.sh
 ```
 
 - `tests/model_test.js` — the pure model under node: resident resolution,
-  pruning a plugin uninstalled behind our back, skipping dot-directories, the
-  `shell.json` shapes.
+  pruning a plugin uninstalled behind our back, skipping dot-directories, every
+  picker exclusion above, the settings-preserving move, the `shell.json` shapes.
 - `tests/cli_test.sh` — the CLI against a scratch `shell.json` with a mocked
-  shell reload, asserting the resulting entry is exactly the shape above. The
-  real `omarchy-shell-config` does the writing; only `$HOME` and the reload are
-  isolated.
+  shell reload, asserting the resulting entry is exactly the shape above, that a
+  widget moved in off the bar keeps its settings, and that `add` refuses a
+  nested drawer, a Barback clone, a plugin whose QML file is gone and a disabled
+  plugin. The real `omarchy-shell-config` does the writing; only `$HOME` and the
+  reload are isolated.
 - `tests/qml_compat_test.sh` — the real `BarWidget.qml` hosting the real
   installed plugins, with no live side effects: scratch `HOME`, a copied
   plugins directory, every helper binary the residents spawn replaced by a
   logging stub, `bar.run` recorded rather than executed, and the whole run
-  inside a network namespace the script verifies is empty before it starts.
+  inside a network namespace the script verifies is empty before it starts. It
+  loads a second, resident-free instance as well, which is where the empty chip
+  and the picker are checked — including that picking a widget runs the bundled
+  CLI exactly once, with the id it offered. The CLI is stubbed there too, so the
+  run still writes nothing.
 
 ## Not in scope for v1
 

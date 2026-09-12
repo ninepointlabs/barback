@@ -13,10 +13,11 @@
   },
   "barWidget": {
     "displayName": "Barback",
-    "description": "Holds other bar widgets in one collapsible slot. Hover to expand, click to pin open.",
+    "description": "Holds other bar widgets in one collapsible slot. Hover to expand, click to pin open. Empty, it is a small chip that opens a widget picker.",
     "category": "System",
     "aliases": ["barback", "drawer", "widgets"],
     "allowMultiple": false,
+    "hostsBarWidgets": true,
     "defaultSection": "right",
     "defaults": {
       "items": [],

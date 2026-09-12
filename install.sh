@@ -103,5 +103,6 @@ Not done automatically, on purpose:
   1. Put the chip on the bar:  omarchy bar put $PLUGIN_ID --section right
   2. Park something in it:     barback add <plugin-id>
 
-An empty drawer draws nothing at all, so step 1 on its own costs no bar space.
+An empty drawer is one small dimmed chip: click it and pick a widget, which is
+step 2 without the CLI.
 NEXT

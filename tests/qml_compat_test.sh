@@ -68,9 +68,12 @@ cp -r "$SHELL_SRC/Ui" "$SCRATCH/root/Ui"
 cp -r "$SHELL_SRC/Commons" "$SCRATCH/root/Commons"
 cp "$ROOT/tests/qml/Harness.qml" "$SCRATCH/root/shell.qml"
 
-# Barback itself, as installed.
-mkdir -p "$PLUGINS/ninepointlabs.barback"
+# Barback itself, as installed — including the bundled CLI, because the picker's
+# add action runs it. The stub loop below replaces it (and every other plugin's
+# bin/) with a logger, so the add is proved by its argv and writes nothing.
+mkdir -p "$PLUGINS/ninepointlabs.barback/bin"
 cp "$ROOT/manifest.json" "$ROOT/BarWidget.qml" "$ROOT/Model.js" "$PLUGINS/ninepointlabs.barback/"
+cp "$ROOT/bin/barback" "$PLUGINS/ninepointlabs.barback/bin/barback"
 
 # Residents under test. The brief asks for at least one plugin that reads
 # bar.shell.serviceFor (spotify, upcoming — the null-fallback path) and one
@@ -219,6 +222,91 @@ if jq -e '
 else
   bad "the persisted entry matches the spec's State shape" "$(jq -c '.persisted | last' "$RESULT")"
 fi
+
+echo
+echo "the empty drawer and its picker"
+
+# Tim overrode two design-spec rules: an empty drawer must be discoverable, and
+# the chip must offer a real picker. See DEVIATIONS.md. Both are checked here
+# against a second, resident-free instance of the real widget.
+[[ $(jqr '.empty.loaded') == true ]] \
+  && ok "a second, empty Barback loaded alongside the populated one" \
+  || bad "an empty Barback loaded" "$(tail -5 "$LOGFILE")"
+
+[[ $(jqr '.empty.itemCount') -eq 0 ]] \
+  && ok "the empty instance really has no residents" \
+  || bad "the empty instance has no residents" "items=$(jqr '.empty.itemCount')"
+
+[[ $(jqr '.empty.visible') == true ]] \
+  && ok "an empty drawer is visible (overrides the spec's draw-nothing rule)" \
+  || bad "an empty drawer is visible" "it drew nothing at all"
+
+if [[ $(jqr '.empty.implicitWidth') -gt 0 && $(jqr '.empty.implicitHeight') -gt 0 ]]; then
+  ok "the empty chip has a real size ($(jqr '.empty.implicitWidth')x$(jqr '.empty.implicitHeight'))"
+else
+  bad "the empty chip has a real size" "0 in one axis — it would be unclickable"
+fi
+
+[[ -n $(jqr '.empty.chipText') ]] \
+  && ok "the empty chip draws the Barback glyph, with no count" \
+  || bad "the empty chip draws a glyph" "chipText was empty"
+
+grep -q "click to add a widget" <<<"$(jqr '.empty.tooltip' | tr 'A-Z' 'a-z')" \
+  && ok "the empty chip's tooltip says what clicking it does" \
+  || bad "the empty chip's tooltip is discoverable" "$(jqr '.empty.tooltip')"
+
+[[ $(jqr '.empty.pickerOpened') == true ]] \
+  && ok "clicking the empty chip opens a real picker" \
+  || bad "clicking the empty chip opens a picker" "pickerOpen stayed false"
+
+[[ $(jqr '.empty.pickerOpen') == false ]] \
+  && ok "a successful pick closes the picker again" \
+  || bad "a successful pick closes the picker" "it stayed open"
+
+# The picker's eligibility rules, against the real installed plugins.
+candidates=$(jq -r '.empty.candidateIds | join(" ")' "$RESULT")
+if [[ -n $candidates ]]; then
+  ok "the picker offered real installed widgets: $candidates"
+else
+  bad "the picker offered real installed widgets" "the list was empty"
+fi
+
+for forbidden in ninepointlabs.barback; do
+  [[ " $candidates " != *" $forbidden "* ]] \
+    && ok "the picker never offers $forbidden (a drawer cannot hold another drawer)" \
+    || bad "the picker never offers $forbidden" "$candidates"
+done
+
+if [[ -n $BACKUP_ID ]]; then
+  [[ " $candidates " != *" $BACKUP_ID "* ]] \
+    && ok "the picker never offers $BACKUP_ID (hidden removal backup)" \
+    || bad "the picker never offers $BACKUP_ID" "$candidates"
+fi
+
+[[ " $candidates " != *" omarchy."* ]] \
+  && ok "the picker never offers a stock omarchy.* widget" \
+  || bad "the picker never offers a stock widget" "$candidates"
+
+# And the add action: one call to the bundled CLI, which is the shared writer's
+# only entry point. The CLI here is a logging stub, so nothing was written.
+add_calls=$(grep -c '^barback add ' "$CALLS")
+if [[ $add_calls -eq 1 ]]; then
+  ok "picking a widget ran the bundled CLI once: $(grep -m1 '^barback add ' "$CALLS")"
+else
+  bad "picking a widget ran the bundled CLI once" "$add_calls matching calls in $CALLS"
+fi
+
+added_id=$(grep -m1 '^barback add ' "$CALLS" | awk '{print $3}')
+[[ -n $added_id && " $candidates " == *" $added_id "* ]] \
+  && ok "the id it passed to the CLI is one the picker had offered" \
+  || bad "the id passed to the CLI was offered" "added '$added_id', offered '$candidates'"
+
+[[ -z $(jqr '.empty.addError') ]] \
+  && ok "the add reported no error" \
+  || bad "the add reported no error" "$(jqr '.empty.addError')"
+
+echo
+echo "the populated drawer"
 
 [[ $(jq '[.facadeCalls[] | select(.call == "run")] | length' "$RESULT") -eq 0 ]] \
   && ok "no resident asked the bar to run a command" \

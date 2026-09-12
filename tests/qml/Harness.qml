@@ -117,6 +117,115 @@ ShellRoot {
     }
   }
 
+  // ------------------------------------------------- the empty drawer, too
+  //
+  // A second, independent Barback with no residents at all. The empty drawer is
+  // now a small discoverable chip with a real "Add a widget" picker behind it
+  // (see DEVIATIONS.md), and neither of those can be checked on an instance
+  // that has residents. It shares the scratch plugins directory, so its picker
+  // sees the same real installed plugins.
+  property var emptyDrawerSettings: ({ items: [] })
+  property var emptyPersisted: []
+
+  PluginBarApi {
+    id: emptyBar
+    pluginId: "ninepointlabs.barback"
+    moduleName: "ninepointlabs.barback"
+    shell: emptyShell
+
+    foreground: hostBar.foreground
+    barForeground: hostBar.barForeground
+    background: hostBar.background
+    urgent: hostBar.urgent
+    fontFamily: hostBar.fontFamily
+    position: hostBar.position
+    vertical: hostBar.vertical
+    barSize: hostBar.barSize
+    layoutConfig: ({ left: [], center: [], right: [{ id: "ninepointlabs.barback" }] })
+
+    _showTooltip: function (target, text) { harness.record("empty:showTooltip", text) }
+    _hideTooltip: function (target) {}
+    _registerClickTarget: function (target) {}
+    _unregisterClickTarget: function (target) {}
+    _requestPopout: function (owner) { harness.record("empty:requestPopout", "") }
+    _releasePopout: function (owner) {}
+    _switchPanelFrom: function (owner, direction) { return false }
+    _targetBelongsToWindow: function (target, window) { return false }
+    _moduleWidgets: function (id) { return emptyLoader.item ? [emptyLoader.item] : [] }
+    _run: function (command) { harness.record("empty:run", command) }
+    _setCenterHoverRevealSuppressed: function (value) {}
+  }
+
+  QtObject {
+    id: emptyShell
+    readonly property string pluginId: "ninepointlabs.barback"
+    readonly property var bar: null
+    readonly property var barConfig: ({})
+    readonly property var idleConfig: ({})
+
+    function serviceFor(id) { return null }
+    function summon(id, payload) { return false }
+    function hide(id) { return false }
+    function toggle(id, payload) { return false }
+    function isPluginOpen(id) { return false }
+    function mutateShellConfig(mutator) { return false }
+
+    function updateEntryInline(id, entry) {
+      var next = {}
+      for (var key in entry) if (key !== "id") next[key] = entry[key]
+      var log = harness.emptyPersisted.slice()
+      log.push(JSON.parse(JSON.stringify(next)))
+      harness.emptyPersisted = log
+      harness.emptyDrawerSettings = next
+      if (emptyLoader.item) emptyLoader.item.settings = next
+      return true
+    }
+  }
+
+  Loader {
+    id: emptyLoader
+    active: harness.pluginsDir !== ""
+    source: harness.pluginsDir !== ""
+      ? "file://" + harness.pluginsDir + "/ninepointlabs.barback/BarWidget.qml" : ""
+
+    onLoaded: {
+      var item = emptyLoader.item
+      item.bar = emptyBar
+      item.moduleName = "ninepointlabs.barback"
+      item.settings = harness.emptyDrawerSettings
+      harness.note("empty barback loaded")
+    }
+  }
+
+  // The picker's add action shells out to `bin/barback add <id>`, the one
+  // writer. tests/qml_compat_test.sh replaces the bundled CLI with a logging
+  // stub, so this proves the wiring and the argv without writing any config.
+  // Observed at the moment the picker opened: a successful pick closes it
+  // again, so the open state cannot be read after the fact.
+  property bool emptyPickerOpened: false
+  property var emptyCandidatesAtOpen: []
+  property string emptyPickedId: ""
+
+  Timer {
+    interval: Math.max(1500, harness.settleMs - 2500)
+    running: true
+    onTriggered: {
+      var item = emptyLoader.item
+      if (!item) return
+      item.openPicker()
+      harness.emptyPickerOpened = item.pickerOpen === true
+      var ids = []
+      for (var i = 0; i < item.pickerCandidates.length; i++)
+        ids.push(String(item.pickerCandidates[i].id))
+      harness.emptyCandidatesAtOpen = ids
+      harness.note("empty picker candidates: " + ids.join(", "))
+      if (ids.length > 0) {
+        harness.emptyPickedId = ids[0]
+        item.addResident(ids[0])
+      }
+    }
+  }
+
   // --------------------------------------------------------- load Barback
 
   Loader {
@@ -204,6 +313,35 @@ ShellRoot {
     return out
   }
 
+  function reportEmpty() {
+    var item = emptyLoader.item
+    var out = {
+      loaded: !!item,
+      itemCount: -1,
+      visible: false,
+      implicitWidth: 0,
+      implicitHeight: 0,
+      chipText: "",
+      tooltip: "",
+      pickerOpen: false,
+      pickerOpened: harness.emptyPickerOpened,
+      candidateIds: harness.emptyCandidatesAtOpen,
+      pickedId: harness.emptyPickedId,
+      addError: "",
+      persisted: harness.emptyPersisted
+    }
+    if (!item) return out
+    out.itemCount = item.items.length
+    out.visible = item.visible === true
+    out.implicitWidth = Math.round(item.implicitWidth)
+    out.implicitHeight = Math.round(item.implicitHeight)
+    out.chipText = String(item.chipText)
+    out.tooltip = String(item.chipTooltipText)
+    out.pickerOpen = item.pickerOpen === true
+    out.addError = String(item.addError || "")
+    return out
+  }
+
   function report() {
     var item = barbackLoader.item
     var result = {
@@ -225,7 +363,10 @@ ShellRoot {
         itemIds: [],
         chipText: item ? String(item.chipText) : ""
       },
-      residents: []
+      residents: [],
+      // The empty drawer, which now draws a chip of its own and owns the
+      // picker. Reported separately because it is a separate instance.
+      empty: harness.reportEmpty()
     }
 
     if (item) {

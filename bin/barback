@@ -3,7 +3,8 @@
 # barback — membership list for the Barback bar drawer.
 #
 #   barback list [--json]                 residents, their ids, whether each resolved
-#   barback add <plugin-id> [--compact]   park it: drop its layout entry, add to items[]
+#   barback add <plugin-id> [--compact]   park it: drop its layout entry, keep its
+#                                         settings, add to items[]
 #   barback remove <plugin-id>            eject: back off the bar, still installed
 #   barback clear                         eject everything
 #   barback probe [--json]                re-check each resident resolves to a live entry point
@@ -34,7 +35,7 @@ die() { echo "barback: $*" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
 usage() {
-  sed -n '3,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '3,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # Same rule the stock CLI applies before an id reaches any command.
@@ -57,17 +58,22 @@ read_config() {
 # matches a dot-directory, which is why an `omarchy plugin remove` backup —
 # this box has three — can never be resolved into the drawer.
 catalog() {
-  local sub id
+  local sub ep exists
   {
     if [[ -d $PLUGINS_DIR ]]; then
       for sub in "$PLUGINS_DIR"/*/; do
         sub="${sub%/}"
         [[ -f $sub/manifest.json ]] || continue
-        jq -c --arg dir "${sub##*/}" --arg path "$sub" \
-          '{dir: $dir, path: $path, manifest: .}' "$sub/manifest.json" 2>/dev/null
+        # A manifest can promise a barWidget file that is not there. jq cannot
+        # stat, so the existence check happens here, next to the scan.
+        ep="$(jq -r '.entryPoints.barWidget // ""' "$sub/manifest.json" 2>/dev/null)"
+        exists=false
+        if [[ -n $ep && $ep != /* && $ep != *..* && -f "$sub/$ep" ]]; then exists=true; fi
+        jq -c --arg dir "${sub##*/}" --arg path "$sub" --argjson exists "$exists" \
+          '{dir: $dir, path: $path, entryExists: $exists, manifest: .}' "$sub/manifest.json" 2>/dev/null
       done
     fi
-  } | jq -sc '
+  } | jq -sc --arg self "$SELF_ID" '
     map(select(
       (.manifest | type) == "object"
       and .manifest.schemaVersion == 1
@@ -82,24 +88,48 @@ catalog() {
         path: .path,
         kinds: (.manifest.kinds // []),
         entryPoint: (.manifest.entryPoints.barWidget // ""),
+        entryExists: .entryExists,
         defaults: (.manifest.barWidget.defaults // {}),
-        displayName: (.manifest.barWidget.displayName // .manifest.name // .manifest.id)
+        displayName: (.manifest.barWidget.displayName // .manifest.name // .manifest.id),
+        # A drawer: it says it hosts bar widgets, or it is a clone of Barback.
+        # Either way it cannot go inside another drawer. Mirrors
+        # Model.isDrawerManifest.
+        drawer: (((.manifest.barWidget.hostsBarWidgets? // false) == true)
+                 or ((.manifest.omarchy.clonedFrom? // "") == $self)),
+        # The checks that decide whether the shell will load a plugin at all,
+        # minus schemaVersion and the id syntax, which are gated above.
+        # Mirrors Model.manifestProblem.
+        valid: ((.manifest.name != null) and (.manifest.version != null)
+          and ((.manifest.kinds | type) == "array") and ((.manifest.kinds | length) > 0)
+          and ((.manifest.entryPoints | type) == "object")
+          and ([ .manifest.entryPoints[] | (type == "string") and (length > 0)
+                 and (startswith("/") | not) and (contains("..") | not) ] | all)
+          and (((.manifest.barWidget | if type == "object" then (.defaultSection // "center") else "center" end))
+               | IN("left", "center", "right")))
       }})
     | add // {}'
 }
 
 JQ_HELPERS='
   def eid: if type == "object" then (.id // "") else tostring end;
+  # Most specific reason first, in the same order as Model.resolveItem, so the
+  # CLI and the chip never describe the same plugin differently.
   def resolve($catalog; $self):
     . as $id
     | ($catalog[$id] // null) as $p
     | if $id == $self then { id: $id, ok: false, reason: "self" }
       elif ($id | startswith("omarchy.")) then { id: $id, ok: false, reason: "reserved" }
       elif $p == null then { id: $id, ok: false, reason: "missing" }
+      elif ($p.drawer == true) then
+        { id: $id, ok: false, reason: "nested-drawer", dir: $p.dir, displayName: $p.displayName }
       elif (($p.kinds | index("bar-widget")) == null) then
         { id: $id, ok: false, reason: "not-a-bar-widget", dir: $p.dir, displayName: $p.displayName }
       elif ($p.entryPoint == "" or ($p.entryPoint | startswith("/")) or ($p.entryPoint | contains(".."))) then
         { id: $id, ok: false, reason: "no-entry-point", dir: $p.dir, displayName: $p.displayName }
+      elif ($p.entryExists != true) then
+        { id: $id, ok: false, reason: "entry-point-missing", dir: $p.dir, displayName: $p.displayName }
+      elif ($p.valid != true) then
+        { id: $id, ok: false, reason: "invalid-manifest", dir: $p.dir, displayName: $p.displayName }
       else
         { id: $id, ok: true, reason: "ok", dir: $p.dir, displayName: $p.displayName,
           entryPoint: ($p.path + "/" + $p.entryPoint) }
@@ -179,7 +209,9 @@ cmd_list() {
   local count
   count=$(jq -r '.residents | length' <<<"$state")
   if [[ $count -eq 0 ]]; then
-    echo "The drawer is empty (section: $(jq -r '.section' <<<"$state")). It takes no space on the bar."
+    echo "The drawer is empty (section: $(jq -r '.section' <<<"$state"))."
+    echo "Its chip is a small dimmed icon on the bar; click it to add a widget, or:"
+    echo "  barback add <plugin-id>"
     return 0
   fi
 
@@ -202,6 +234,10 @@ reason_text() {
     reserved) echo "reserved omarchy.* id" ;;
     not-a-bar-widget) echo "not a bar widget" ;;
     no-entry-point) echo "no barWidget entry point" ;;
+    entry-point-missing) echo "its barWidget file is gone" ;;
+    invalid-manifest) echo "its manifest is broken" ;;
+    nested-drawer) echo "a drawer cannot hold another drawer" ;;
+    disabled) echo "turned off in shell.json" ;;
     *) echo "$1" ;;
   esac
 }
@@ -240,14 +276,23 @@ cmd_add() {
   [[ $id != "$SELF_ID" ]] || die "Barback cannot hold itself"
   [[ $id != omarchy.* ]] || die "stock omarchy.* widgets stay on the bar; the drawer is for third-party plugins"
 
-  local state section resolution
+  local state section resolution config catalog
   state="$(resolved_json)"
   section="$(require_drawer "$state")" || exit 1
+  config="$(read_config)"
+  catalog="$(catalog)"
 
   resolution="$(jq -nc "$JQ_HELPERS"'$id | resolve($catalog; "'"$SELF_ID"'")' \
-    --arg id "$id" --argjson catalog "$(catalog)")"
+    --arg id "$id" --argjson catalog "$catalog")"
   if [[ $(jq -r '.ok' <<<"$resolution") != true ]]; then
     die "cannot park $id: $(reason_text "$(jq -r '.reason' <<<"$resolution")")"
+  fi
+
+  # A plugin the user turned off stays off. `disabledPlugins[]` is the one place
+  # the shell records that (PluginRegistry.isDisabled), and the chip's picker
+  # never offers one either.
+  if [[ $(jq -r --arg id "$id" '[(.disabledPlugins // [])[] | select(. == $id)] | length' <<<"$config") -gt 0 ]]; then
+    die "cannot park $id: $(reason_text disabled)"
   fi
 
   if [[ $(jq -r --arg id "$id" '[.residents[] | select(.id == $id)] | length' <<<"$state") -gt 0 ]]; then
@@ -255,10 +300,22 @@ cmd_add() {
     return 0
   fi
 
+  # Moving a widget off the bar and into the drawer must not reset it. The
+  # manifest defaults are the floor; whatever the user had actually set in the
+  # widget's own layout entry wins. Mirrors Model.settingsForAdd.
+  local layout_entry settings kept=0
+  layout_entry="$(jq -c "$JQ_HELPERS"'
+    [ (.bar.layout.left // []), (.bar.layout.center // []), (.bar.layout.right // []) ]
+    | add
+    | map(select(type == "object" and eid == $id))
+    | if length == 0 then {} else .[0] end' --arg id "$id" <<<"$config")"
+  settings="$(jq -nc --argjson defaults "$(jq -c --arg id "$id" '.[$id].defaults // {}' <<<"$catalog")" \
+    --argjson entry "$layout_entry" '$defaults + ($entry | del(.id, .section, .items))')"
+  [[ $(jq -r 'del(.id, .section, .items) | length' <<<"$layout_entry") -gt 0 ]] && kept=1
+
   local entry
-  entry="$(jq -nc --arg id "$id" --argjson compact "$compact" \
-    --argjson defaults "$(jq -c --arg id "$id" '.[$id].defaults // {}' <<<"$(catalog)")" '
-    { id: $id, settings: $defaults } + (if $compact then { compact: true } else {} end)')"
+  entry="$(jq -nc --arg id "$id" --argjson compact "$compact" --argjson settings "$settings" '
+    { id: $id, settings: $settings } + (if $compact then { compact: true } else {} end)')"
 
   # Drop every layout entry the resident owns, then append it to items[].
   # Its only home is now Barback's entry.
@@ -275,7 +332,11 @@ cmd_add() {
   ' --arg id "$id" --arg self "$SELF_ID" --arg section "$section" --argjson entry "$entry" \
     >/dev/null || die "could not update shell.json"
 
-  echo "parked $id in the drawer"
+  if [[ $kept -eq 1 ]]; then
+    echo "parked $id in the drawer (kept the settings it had on the bar)"
+  else
+    echo "parked $id in the drawer"
+  fi
 }
 
 cmd_remove() {

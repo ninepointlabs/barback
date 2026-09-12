@@ -45,31 +45,70 @@ BarWidget {
   // the catalogue is rebuilt from disk with the same scan PluginRegistry runs.
   // The plugins directory is this file's own parent, which survives being
   // installed somewhere other than the default path.
-  readonly property string pluginsDir: {
+  readonly property string pluginDir: {
     var url = String(Qt.resolvedUrl("."))
     if (url.indexOf("file://") === 0) url = url.substring(7)
-    var dir = decodeURIComponent(url).replace(/\/$/, "")
-    var slash = dir.lastIndexOf("/")
-    var parent = slash > 0 ? dir.substring(0, slash) : ""
+    return decodeURIComponent(url).replace(/\/$/, "")
+  }
+
+  readonly property string pluginsDir: {
+    var slash = root.pluginDir.lastIndexOf("/")
+    var parent = slash > 0 ? root.pluginDir.substring(0, slash) : ""
     return parent || (Quickshell.env("HOME") + "/.config/omarchy/plugins")
+  }
+
+  // Where the shell records a plugin the user turned off. The picker never
+  // offers a disabled plugin, the same way the shell would not load one.
+  readonly property string shellConfigPath: {
+    var base = Quickshell.env("XDG_CONFIG_HOME")
+    if (!base) base = Quickshell.env("HOME") + "/.config"
+    return base + "/omarchy/shell.json"
   }
 
   // `for sub in "$dir"/*/` is the shell's own scan, and its glob never
   // matches a dot-directory — which is exactly why an `omarchy plugin remove`
   // backup (.ninepointlabs.dopewars.bak.20260909154215 and friends) can never
   // be resolved into the drawer. Model.buildIndex re-checks it anyway.
+  //
+  // Each record also carries whether the barWidget entry point is really a
+  // file on disk: a manifest that promises a QML file that is not there is a
+  // plugin the picker must not offer and the drawer must not try to mount.
+  // Every jq filter here is written without quotes of its own, so the script
+  // survives being a QML string literal without a layer of escaping.
   readonly property string scanScript: '
     dir="$0"
-    [ -d "$dir" ] || { printf "[]"; exit 0; }
-    for sub in "$dir"/*/; do
-      sub="${sub%/}"
-      [ -f "$sub/manifest.json" ] || continue
-      jq -c --arg dir "${sub##*/}" --arg path "$sub" \
-        "{dir:\\$dir,path:\\$path,manifest:.}" "$sub/manifest.json" 2>/dev/null
-    done | jq -sc "."
+    cfg="$1"
+    records=[]
+    if [ -d "$dir" ]; then
+      records=$(
+        for sub in "$dir"/*/; do
+          sub="${sub%/}"
+          [ -f "$sub/manifest.json" ] || continue
+          ep=$(jq -r .entryPoints.barWidget "$sub/manifest.json" 2>/dev/null)
+          exists=false
+          case "$ep" in
+            null|"") ;;
+            /*|*..*) ;;
+            *) [ -f "$sub/$ep" ] && exists=true ;;
+          esac
+          jq -c --arg dir "${sub##*/}" --arg path "$sub" --argjson exists "$exists" \
+            "{dir:\\$dir,path:\\$path,entryExists:\\$exists,manifest:.}" \
+            "$sub/manifest.json" 2>/dev/null
+        done | jq -sc .
+      )
+    fi
+    [ -n "$records" ] || records=[]
+    disabled=$(jq -c .disabledPlugins "$cfg" 2>/dev/null)
+    case "$disabled" in
+      "["*) ;;
+      *) disabled=[] ;;
+    esac
+    jq -nc --argjson records "$records" --argjson disabled "$disabled" \
+      "{records:\\$records,disabled:\\$disabled}"
   '
 
   property var pluginIndex: ({})
+  property var disabledPlugins: []
   property bool scanned: false
   property bool scanPending: false
 
@@ -84,19 +123,23 @@ BarWidget {
       root.scanPending = true
       return
     }
-    scanner.command = ["bash", "-c", root.scanScript, root.pluginsDir]
+    scanner.command = ["bash", "-c", root.scanScript, root.pluginsDir, root.shellConfigPath]
     scanner.running = true
   }
 
   function applyScan(text) {
-    var records = []
+    var scan = null
     try {
-      records = JSON.parse(String(text || "[]"))
+      scan = JSON.parse(String(text || "null"))
     } catch (error) {
       console.warn("barback: could not read " + root.pluginsDir + ": " + error)
       return
     }
+    // Tolerate a bare array as well as the { records, disabled } object, so a
+    // half-upgraded install never loses its drawer.
+    var records = Array.isArray(scan) ? scan : (scan && Array.isArray(scan.records) ? scan.records : [])
     root.pluginIndex = Model.buildIndex(records)
+    root.disabledPlugins = scan && !Array.isArray(scan) && Array.isArray(scan.disabled) ? scan.disabled : []
     root.scanned = true
     Qt.callLater(root.pruneResidents)
   }
@@ -161,6 +204,92 @@ BarWidget {
 
   function ejectAll() {
     root.persistItems([])
+  }
+
+  // -------------------------------------------------------- adding a widget
+  //
+  // The design spec says the chip is "deliberately not a plugin picker" and
+  // hands the choosing to Barkeep. Tim overrode that, and the empty-drawer
+  // rule with it; both overrides are recorded in DEVIATIONS.md. The spec's
+  // one-writer rule is untouched, which is the part that matters here.
+  //
+  // Eligibility comes from Model.candidates — the same rule set `barback add`
+  // enforces — so the picker can never offer something the CLI then refuses.
+
+  property bool pickerOpen: false
+  property string addError: ""
+  property string addingId: ""
+
+  readonly property var pickerCandidates: Model.candidates(root.pluginIndex, root.items, {
+    disabled: root.disabledPlugins
+  })
+
+  function openPicker() {
+    root.addError = ""
+    root.menuOpen = false
+    // A plugin installed a minute ago should be in the list.
+    root.rescan()
+    root.pickerOpen = true
+  }
+
+  // Barback does not write shell.json itself, and does not get a second writer
+  // for the picker. `bin/barback add` is the one that already knows how: it
+  // sources the shared `omarchy-shell-config` helper that omarchy-bar itself
+  // uses, drops the widget's own layout entry, carries its settings across into
+  // items[], replaces the file atomically, and tells the shell to reload. The
+  // copy bundled beside this file is preferred so the drawer does not depend on
+  // the CLI being on PATH; a PATH copy is the fallback.
+  readonly property string addScript: '
+    bundled="$0"
+    id="$1"
+    if [ -x "$bundled" ]; then exec "$bundled" add "$id"; fi
+    command -v barback >/dev/null 2>&1 || { echo "the barback CLI is not installed" >&2; exit 127; }
+    exec barback add "$id"
+  '
+
+  function addResident(id) {
+    var key = String(id || "")
+    if (!key || adder.running) return false
+    root.addError = ""
+    root.addingId = key
+    adder.command = ["bash", "-c", root.addScript, root.pluginDir + "/bin/barback", key]
+    adder.running = true
+    return true
+  }
+
+  // The CLI's own refusal message is the useful one ("cannot park x: not a bar
+  // widget"), so it is kept and shown rather than replaced with a generic
+  // failure. Collected into a property because a stream's finish and the
+  // process's exit are separate signals with no guaranteed order.
+  property string addStderr: ""
+
+  function reportAddResult(code, id) {
+    if (code === 0) {
+      root.pickerOpen = false
+      // The write reloads the shell, which pushes new settings back into this
+      // widget; the rescan is for the index, so a just-added resident resolves
+      // on the first frame it is asked about.
+      root.rescan()
+      return
+    }
+    var detail = String(root.addStderr || "").replace(/\s+$/, "").split("\n").pop()
+    root.addError = detail || ("barback add exited " + code)
+    console.warn("barback: could not add " + id + ": " + root.addError)
+  }
+
+  Process {
+    id: adder
+    stdout: StdioCollector {}
+    stderr: StdioCollector {
+      onStreamFinished: root.addStderr = text
+    }
+    onRunningChanged: if (running) root.addStderr = ""
+    onExited: function (code) {
+      var id = root.addingId
+      root.addingId = ""
+      // Let a pending stderr collection land first.
+      Qt.callLater(function () { root.reportAddResult(code, id) })
+    }
   }
 
   // A hosted widget calling updateEntryInline on its own id lands here: fold
@@ -263,10 +392,18 @@ BarWidget {
   function close() {
     root.pinned = false
     root.menuOpen = false
+    root.pickerOpen = false
   }
 
-  // Zero residents means zero bar space: the chip is not drawn at all.
-  visible: root.items.length > 0
+  readonly property bool empty: root.items.length === 0
+
+  // An empty drawer draws a small, quiet chip rather than nothing at all: one
+  // glyph, dimmed until you point at it, and a click opens the picker. This
+  // overrides the design spec's "empty drawer occupies no space" rule at Tim's
+  // explicit instruction — an invisible empty drawer is an undiscoverable one,
+  // and the only way to find out it was installed was to read the config. The
+  // override is recorded in DEVIATIONS.md.
+  visible: true
   clip: false
   implicitWidth: root.vertical ? root.barSize : Math.round(chip.implicitWidth + revealExtent)
   implicitHeight: root.vertical ? Math.round(chip.implicitHeight + revealExtent) : root.barSize
@@ -291,12 +428,18 @@ BarWidget {
     width: implicitWidth
     height: implicitHeight
     text: root.chipText
-    active: root.pinned || root.menuOpen
-    tooltipText: Model.chipTooltip(root.residents, root.badgeTotal)
+    active: root.pinned || root.menuOpen || root.pickerOpen
+    tooltipText: root.chipTooltipText
+    // Quiet until pointed at, so an empty drawer is discoverable without
+    // competing with the widgets that are actually doing something.
+    dimmed: root.empty && !chip.tooltipHovered && !root.pickerOpen && !root.menuOpen
 
     onPressed: function (button) {
       if (button === Qt.RightButton) root.menuOpen = !root.menuOpen
       else if (button === Qt.MiddleButton) root.close()
+      // An empty drawer has nothing to expand, so the click that would pin it
+      // opens the picker instead: the one action there is to take.
+      else if (root.empty) { if (root.pickerOpen) root.pickerOpen = false; else root.openPicker() }
       else root.pinned = !root.pinned
     }
 
@@ -313,6 +456,7 @@ BarWidget {
     }
   }
 
+  readonly property string chipTooltipText: Model.chipTooltip(root.residents, root.badgeTotal)
   readonly property string chipGlyph: "󰀱"
   readonly property string chipText: {
     var live = 0
@@ -350,6 +494,10 @@ BarWidget {
 
   // ------------------------------------------------------- right-click menu
 
+  readonly property color popupForeground: root.bar ? root.bar.foreground : Color.foreground
+  readonly property string popupFontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+  readonly property color popupUrgent: root.bar ? root.bar.urgent : Color.urgent
+
   PopupCard {
     id: menu
     anchorItem: chip
@@ -359,8 +507,8 @@ BarWidget {
     contentWidth: menu.fittedContentWidth(Style.space(240))
     contentHeight: menu.fittedContentHeight(menuColumn.implicitHeight)
 
-    readonly property color foreground: root.bar ? root.bar.foreground : Color.foreground
-    readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+    readonly property color foreground: root.popupForeground
+    readonly property string fontFamily: root.popupFontFamily
 
     Column {
       id: menuColumn
@@ -408,12 +556,13 @@ BarWidget {
 
       PanelSeparator { width: menuColumn.width }
 
-      // Deliberately not a plugin picker: the chip holds a membership list
-      // and hands the choosing to Barkeep.
+      // The same picker the empty chip opens, reachable from a populated
+      // drawer too: once there is something in the drawer the chip's own click
+      // is the pin gesture, so this row is how you add the next one.
       MenuRow {
         width: menuColumn.width
-        label: "Add a plugin…"
-        onActivated: { root.close(); root.summonBarkeep() }
+        label: "Add a widget…"
+        onActivated: root.openPicker()
       }
 
       MenuRow {
@@ -431,6 +580,125 @@ BarWidget {
     }
   }
 
+  // ------------------------------------------------------- the widget picker
+  //
+  // Every eligible installed third-party bar widget, by name. Picking one runs
+  // `barback add` (see addResident), which is the only writer.
+
+  PopupCard {
+    id: picker
+    anchorItem: chip
+    owner: root
+    bar: root.bar
+    open: root.pickerOpen
+    padding: Style.space(8)
+    contentWidth: picker.fittedContentWidth(Style.space(300))
+    contentHeight: picker.fittedContentHeight(pickerColumn.implicitHeight, Style.space(420))
+
+    Column {
+      id: pickerColumn
+      anchors.fill: parent
+      spacing: Style.space(6)
+
+      Row {
+        spacing: Style.space(8)
+        Text {
+          text: root.chipGlyph
+          color: root.popupForeground
+          font.family: root.popupFontFamily
+          font.pixelSize: Style.font.body
+        }
+        Text {
+          text: "Add a widget"
+          color: root.popupForeground
+          font.family: root.popupFontFamily
+          font.pixelSize: Style.font.body
+          font.bold: true
+        }
+      }
+
+      Text {
+        width: pickerColumn.width
+        wrapMode: Text.WordWrap
+        text: "Installed bar widgets that can live in the drawer. Picking one takes "
+          + "it off the bar and keeps its settings."
+        color: Qt.darker(root.popupForeground, 1.4)
+        font.family: root.popupFontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      PanelSeparator { width: pickerColumn.width }
+
+      // Nothing to offer is a sentence, not an empty box. The two ways to get
+      // here read very differently, so they say different things.
+      Text {
+        visible: root.pickerCandidates.length === 0
+        width: pickerColumn.width
+        wrapMode: Text.WordWrap
+        text: !root.scanned
+          ? "Looking for installed widgets…"
+          : (root.items.length > 0
+            ? "Every eligible widget is already in the drawer."
+            : "No eligible third-party bar widgets are installed. Stock omarchy.* "
+              + "widgets stay on the bar.")
+        color: Qt.darker(root.popupForeground, 1.5)
+        font.family: root.popupFontFamily
+        font.pixelSize: Style.font.bodySmall
+        font.italic: true
+      }
+
+      Flickable {
+        id: pickerList
+        width: pickerColumn.width
+        height: Math.min(candidateColumn.implicitHeight, Style.space(264))
+        contentWidth: width
+        contentHeight: candidateColumn.implicitHeight
+        visible: root.pickerCandidates.length > 0
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+
+        Column {
+          id: candidateColumn
+          width: pickerList.width
+
+          Repeater {
+            model: root.pickerCandidates
+            delegate: MenuRow {
+              required property var modelData
+              width: candidateColumn.width
+              label: modelData.displayName || modelData.id
+              // The id, not an error: a widget's display name and its plugin id
+              // are often nothing like each other, and the id is what the CLI
+              // and Barkeep call it.
+              detail: modelData.id
+              detailColor: Qt.darker(root.popupForeground, 1.6)
+              enabled: root.addingId === ""
+              onActivated: root.addResident(modelData.id)
+            }
+          }
+        }
+      }
+
+      Text {
+        visible: root.addError !== ""
+        width: pickerColumn.width
+        wrapMode: Text.WordWrap
+        text: root.addError
+        color: root.popupUrgent
+        font.family: root.popupFontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      PanelSeparator { width: pickerColumn.width }
+
+      MenuRow {
+        width: pickerColumn.width
+        label: "Manage in Barkeep…"
+        onActivated: { root.close(); root.summonBarkeep() }
+      }
+    }
+  }
+
   // Barback's shell facade is scoped to its own id, so it cannot summon
   // another plugin directly; the keybind path the user already has is the
   // supported way in.
@@ -439,10 +707,13 @@ BarWidget {
       bar.run("omarchy-shell shell toggle ninepointlabs.barkeep")
   }
 
+  // One row in the chip's menu or in the picker: a label, an optional trailing
+  // detail, and a click.
   component MenuRow: Item {
     id: menuRow
     property string label: ""
     property string detail: ""
+    property color detailColor: root.popupUrgent
     property bool enabled: true
     signal activated()
 
@@ -452,7 +723,7 @@ BarWidget {
       anchors.fill: parent
       radius: Math.max(2, Style.cornerRadius)
       color: rowMouse.containsMouse && menuRow.enabled
-        ? Style.hoverFillFor(menu.foreground, menu.foreground) : "transparent"
+        ? Style.hoverFillFor(root.popupForeground, root.popupForeground) : "transparent"
     }
 
     Text {
@@ -463,8 +734,8 @@ BarWidget {
       anchors.right: detailText.left
       anchors.rightMargin: Style.space(6)
       text: menuRow.label
-      color: menuRow.enabled ? menu.foreground : Qt.darker(menu.foreground, 1.8)
-      font.family: menu.fontFamily
+      color: menuRow.enabled ? root.popupForeground : Qt.darker(root.popupForeground, 1.8)
+      font.family: root.popupFontFamily
       font.pixelSize: Style.font.bodySmall
       elide: Text.ElideRight
     }
@@ -476,8 +747,8 @@ BarWidget {
       anchors.right: parent.right
       anchors.rightMargin: Style.space(6)
       text: menuRow.detail
-      color: root.bar ? root.bar.urgent : Color.urgent
-      font.family: menu.fontFamily
+      color: menuRow.detailColor
+      font.family: root.popupFontFamily
       font.pixelSize: Style.font.caption
     }
 

@@ -47,21 +47,40 @@ exit 0
 STUB
 chmod +x "$SCRATCH/bin/omarchy-shell"
 
+# plugin <dir> <id> <kinds> <entry> [defaults] [extra-manifest-json] [noentry]
+#
+#   extra-manifest-json  merged into the manifest (recursively), for the keys
+#                        that decide eligibility rather than settings
+#   noentry              declare the entry point but do not create the file,
+#                        which is a real state: a half-deleted plugin
 plugin() {
-  local dir="$1" id="$2" kinds="$3" entry="$4" defaults="${5:-{\}}"
+  local dir="$1" id="$2" kinds="$3" entry="$4" defaults="${5:-{\}}" extra="${6:-{\}}" noentry="${7:-}"
   mkdir -p "$PLUGINS/$dir"
-  jq -n --arg id "$id" --argjson kinds "$kinds" --arg entry "$entry" --argjson defaults "$defaults" '
+  jq -n --arg id "$id" --argjson kinds "$kinds" --arg entry "$entry" \
+        --argjson defaults "$defaults" --argjson extra "$extra" '
     { schemaVersion: 1, id: $id, name: $id, version: "1.0.0", kinds: $kinds,
       entryPoints: (if $entry == "" then {} else { barWidget: $entry } end),
-      barWidget: { displayName: $id, defaults: $defaults } }' >"$PLUGINS/$dir/manifest.json"
-  [[ -n $entry ]] && { mkdir -p "$(dirname "$PLUGINS/$dir/$entry")"; : >"$PLUGINS/$dir/$entry"; }
+      barWidget: { displayName: $id, defaults: $defaults } } * $extra' >"$PLUGINS/$dir/manifest.json"
+  [[ -n $entry && -z $noentry ]] && { mkdir -p "$(dirname "$PLUGINS/$dir/$entry")"; : >"$PLUGINS/$dir/$entry"; }
   return 0
 }
 
-plugin ninepointlabs.barback   ninepointlabs.barback   '["bar-widget"]' BarWidget.qml
+plugin ninepointlabs.barback   ninepointlabs.barback   '["bar-widget"]' BarWidget.qml '{}' \
+  '{"barWidget":{"hostsBarWidgets":true}}'
 plugin example.alpha           example.alpha           '["bar-widget"]' BarWidget.qml '{"showTrack":true,"maxLabelWidth":180}'
 plugin beta-folder             example.beta            '["bar-widget"]' ui/Bar.qml
 plugin example.serviceonly     example.serviceonly     '["service"]'    ''
+# Never on the bar, so parking it has no settings to carry across.
+plugin example.offbar          example.offbar          '["bar-widget"]' BarWidget.qml '{"mode":"quiet"}'
+# Another drawer, and a clone of this one: nested drawers are out of scope.
+plugin example.shelf           example.shelf           '["bar-widget"]' BarWidget.qml '{}' \
+  '{"barWidget":{"hostsBarWidgets":true}}'
+plugin example.clone           example.clone           '["bar-widget"]' BarWidget.qml '{}' \
+  '{"omarchy":{"clonedFrom":"ninepointlabs.barback"}}'
+# A manifest that promises a QML file that is not there.
+plugin example.noqml           example.noqml           '["bar-widget"]' BarWidget.qml '{}' '{}' noentry
+# Turned off by the user, recorded in disabledPlugins[].
+plugin example.off             example.off             '["bar-widget"]' BarWidget.qml
 # A hidden `omarchy plugin remove` backup: never a candidate, never resolvable.
 plugin .example.gone.bak.20260909154215 example.gone   '["bar-widget"]' BarWidget.qml
 
@@ -80,6 +99,7 @@ cat >"$CONFIG" <<'JSON'
     },
     "position": "top"
   },
+  "disabledPlugins": ["example.off"],
   "plugins": []
 }
 JSON
@@ -98,9 +118,16 @@ echo
 echo "list and probe on an empty drawer"
 
 out="$(run list)"
-grep -q "drawer is empty" <<<"$out" \
-  && ok "list reports an empty drawer and says it costs no bar space" \
-  || bad "list reports an empty drawer" "$out"
+# The empty drawer is a small discoverable chip now, not nothing at all, and
+# `list` is where someone checks what it is doing. See DEVIATIONS.md.
+if grep -q "drawer is empty" <<<"$out" && grep -q "click it to add a widget" <<<"$out"; then
+  ok "list reports an empty drawer and points at the chip that fills it"
+else
+  bad "list reports an empty drawer" "$out"
+fi
+grep -q "takes no space" <<<"$out" \
+  && bad "list no longer claims an empty drawer is invisible" "$out" \
+  || ok "list no longer claims an empty drawer takes no bar space"
 
 run probe >/dev/null 2>&1 \
   && ok "probe passes with no residents" \
@@ -113,6 +140,10 @@ out="$(run add example.alpha --compact 2>&1)"
 grep -q "parked example.alpha" <<<"$out" \
   && ok "add parks a resident" || bad "add parks a resident" "$out"
 
+grep -q "kept the settings it had on the bar" <<<"$out" \
+  && ok "add says it carried the widget's bar settings across" \
+  || bad "add says it carried the settings across" "$out"
+
 [[ $(cfg '[.bar.layout.left[],.bar.layout.center[],.bar.layout.right[] | .id] | index("example.alpha") // "none"') == '"none"' ]] \
   && ok "add deletes the resident's entry from every layout section" \
   || bad "add deletes the resident's layout entry" "$(cfg '.bar.layout')"
@@ -123,6 +154,11 @@ grep -q "parked example.alpha" <<<"$out" \
 
 # The spec's State section, verbatim:
 #   { id, section, items: [ { id, settings, compact? } ] }
+#
+# example.alpha was on the bar with `showTrack: false` while its manifest
+# defaults say `showTrack: true`. Moving a widget into the drawer must not
+# silently reset it, so the defaults are the floor and the settings it actually
+# had on the bar win.
 if jq -e '
   (.bar.layout.right[] | select(.id == "ninepointlabs.barback")) as $e
   | ($e | keys_unsorted | sort) == ["id", "items", "section"]
@@ -131,9 +167,9 @@ if jq -e '
   and ($e.items[0] | keys_unsorted | sort) == ["compact", "id", "settings"]
   and $e.items[0].id == "example.alpha"
   and $e.items[0].compact == true
-  and $e.items[0].settings == { showTrack: true, maxLabelWidth: 180 }
+  and $e.items[0].settings == { showTrack: false, maxLabelWidth: 180 }
 ' "$CONFIG" >/dev/null; then
-  ok "the entry is exactly the spec's State shape, settings seeded from the manifest defaults"
+  ok "the entry is the spec's State shape, with the bar settings preserved over the manifest defaults"
 else
   bad "the entry is exactly the spec's State shape" "$(cfg '.bar.layout.right[] | select(.id=="ninepointlabs.barback")')"
 fi
@@ -160,9 +196,27 @@ else
   bad "a second resident appends in order" "$(cfg '(.bar.layout.right[]|select(.id=="ninepointlabs.barback")).items')"
 fi
 
+# example.beta has no manifest defaults at all, so the only settings it can
+# arrive with are the ones it had in the center section.
+[[ $(cfg '(.bar.layout.right[] | select(.id == "ninepointlabs.barback")).items[1].settings') == '{"units":"metric"}' ]] \
+  && ok "a widget moved in from the center keeps the settings it had there" \
+  || bad "a widget moved in from the center keeps its settings" \
+       "$(cfg '(.bar.layout.right[]|select(.id=="ninepointlabs.barback")).items[1]')"
+
 [[ $(cfg '.bar.layout.center | length') -eq 0 ]] \
   && ok "parking a widget from the center section empties that slot" \
   || bad "parking clears the center entry" "$(cfg '.bar.layout.center')"
+
+# A widget that was never on the bar has nothing to preserve: it gets its
+# manifest defaults, which is what add has always done.
+out="$(run add example.offbar 2>&1)"
+if [[ $(cfg '(.bar.layout.right[] | select(.id == "ninepointlabs.barback")).items[2].settings') == '{"mode":"quiet"}' ]] \
+   && ! grep -q "kept the settings" <<<"$out"; then
+  ok "parking a widget that was off the bar seeds it from the manifest defaults"
+else
+  bad "parking an off-bar widget seeds the manifest defaults" "$out"
+fi
+run remove example.offbar >/dev/null 2>&1
 
 echo
 echo "add refusals"
@@ -172,6 +226,10 @@ for case in "ninepointlabs.barback:cannot hold itself" \
             "example.serviceonly:not a bar widget" \
             "example.nope:not installed" \
             "example.gone:not installed" \
+            "example.shelf:a drawer cannot hold another drawer" \
+            "example.clone:a drawer cannot hold another drawer" \
+            "example.noqml:its barWidget file is gone" \
+            "example.off:turned off in shell.json" \
             "../../etc:invalid plugin id"; do
   id="${case%%:*}"; want="${case#*:}"
   out="$(run add "$id" 2>&1)"

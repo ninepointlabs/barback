@@ -53,8 +53,12 @@ function equal(actual, expected, message) {
 
 const PLUGINS = "/home/tim/.config/omarchy/plugins";
 
-function record(dir, manifest) {
-  return { dir, path: PLUGINS + "/" + dir, manifest };
+function record(dir, manifest, entryExists) {
+  const out = { dir, path: PLUGINS + "/" + dir, manifest };
+  // Left off entirely when the caller does not say: "nobody looked" is not the
+  // same answer as "the file is not there".
+  if (entryExists !== undefined) out.entryExists = entryExists;
+  return out;
 }
 
 // Shaped after the real plugins installed on this machine, including the two
@@ -302,12 +306,143 @@ check("hostedSettings applies the compact overlay without clobbering choices", (
   equal(Model.hostedSettings(null, false), {});
 });
 
-check("candidates exclude stock widgets, backups, services and self", () => {
-  equal(Model.candidates(INDEX, [{ id: "ninepointlabs.spotify" }]).map(c => c.id), [
-    "com.omastorm.radar", "ninepointlabs.spotify", "tim.omostrich", "tim.ring-cameras", "tim.theme-rotate"
+console.log("\nthe Add a widget picker");
+
+// Tim authorised a real picker on the chip, overriding the design spec's
+// "deliberately not a plugin picker" rule. See DEVIATIONS.md. These are the
+// exclusions that make the offered list trustworthy: the picker must never
+// offer something `barback add` would then refuse.
+
+check("the picker lists eligible widgets by name, not by id", () => {
+  const offered = Model.candidates(INDEX, []);
+  equal(offered.map(c => c.displayName),
+    ["Omastorm", "Omostrich", "Ring Cameras", "Spotify", "Theme Rotate"]);
+  equal(offered.map(c => c.id), [
+    "com.omastorm.radar", "tim.omostrich", "tim.ring-cameras",
+    "ninepointlabs.spotify", "tim.theme-rotate"
   ]);
-  equal(Model.candidates(INDEX, [{ id: "ninepointlabs.spotify" }])
-    .filter(c => c.inDrawer).map(c => c.id), ["ninepointlabs.spotify"]);
+});
+
+check("the picker excludes stock widgets, hidden backups, services and self", () => {
+  const offered = Model.candidates(INDEX, []).map(c => c.id);
+  // io.github.dougfour.grok-usage is kinds:["service"] with no bar widget.
+  assert(offered.indexOf("io.github.dougfour.grok-usage") === -1, "a service-only plugin is not offerable");
+  assert(offered.indexOf("ninepointlabs.barback") === -1, "Barback cannot hold itself");
+  for (const backup of ["ninepointlabs.dopewars", "ninepointlabs.zorkmachy", "ninepointlabs.hey-calendar"])
+    assert(offered.indexOf(backup) === -1, backup + " lives in a hidden backup dir");
+  const withStock = Model.buildIndex(REAL_RECORDS.concat([
+    record("omarchy.clock", {
+      schemaVersion: 1, id: "omarchy.clock", name: "Clock", version: "1.0.0",
+      kinds: ["bar-widget"], entryPoints: { barWidget: "Clock.qml" }
+    })
+  ]));
+  assert(Model.candidates(withStock, []).map(c => c.id).indexOf("omarchy.clock") === -1,
+    "stock omarchy.* widgets stay on the bar");
+});
+
+check("the picker excludes widgets already in the drawer", () => {
+  const items = [{ id: "ninepointlabs.spotify" }, { id: "tim.theme-rotate" }];
+  equal(Model.candidates(INDEX, items).map(c => c.id),
+    ["com.omastorm.radar", "tim.omostrich", "tim.ring-cameras"]);
+  // …unless something asks for them, which is how a membership view would.
+  equal(Model.candidates(INDEX, items, { includeMembers: true })
+    .filter(c => c.inDrawer).map(c => c.id),
+    ["ninepointlabs.spotify", "tim.theme-rotate"]);
+});
+
+check("the picker excludes another drawer, and a clone of this one", () => {
+  const index = Model.buildIndex(REAL_RECORDS.concat([
+    record("someone.shelf", {
+      schemaVersion: 1, id: "someone.shelf", name: "Shelf", version: "1.0.0",
+      kinds: ["bar-widget"], entryPoints: { barWidget: "BarWidget.qml" },
+      barWidget: { displayName: "Shelf", hostsBarWidgets: true }
+    }),
+    record("tim.barback", {
+      schemaVersion: 1, id: "tim.barback", name: "Barback", version: "0.1.0",
+      kinds: ["bar-widget"], entryPoints: { barWidget: "BarWidget.qml" },
+      barWidget: { displayName: "Barback (clone)" },
+      omarchy: { clonedFrom: "ninepointlabs.barback" }
+    })
+  ]));
+  assert(index["someone.shelf"].drawer === true, "hostsBarWidgets marks a drawer");
+  assert(index["tim.barback"].drawer === true, "a clone of Barback is still a drawer");
+  const offered = Model.candidates(index, []).map(c => c.id);
+  assert(offered.indexOf("someone.shelf") === -1, "nested drawers are out of scope for v1");
+  assert(offered.indexOf("tim.barback") === -1, "a Barback clone cannot go in the drawer");
+  // And a hand-edited membership list naming one does not mount it either.
+  const resident = Model.resolveItem("someone.shelf", index);
+  equal(resident.ok, false);
+  equal(resident.reason, "nested-drawer");
+  equal(resident.placeholder, true);
+});
+
+check("the picker excludes a plugin the user turned off", () => {
+  const offered = Model.candidates(INDEX, [], { disabled: ["tim.theme-rotate"] }).map(c => c.id);
+  assert(offered.indexOf("tim.theme-rotate") === -1, "a disabled plugin is not offerable");
+  assert(offered.indexOf("ninepointlabs.spotify") !== -1, "its neighbours are unaffected");
+  equal(Model.disabledIds({ disabledPlugins: ["a.one", "a.one", "", "a.two"] }), ["a.one", "a.two"]);
+  equal(Model.disabledIds({}), []);
+  equal(Model.disabledIds(null), []);
+});
+
+check("the picker excludes a broken manifest and a missing entry-point file", () => {
+  const index = Model.buildIndex([
+    record("x.gone", {
+      schemaVersion: 1, id: "x.gone", name: "Gone", version: "1.0.0",
+      kinds: ["bar-widget"], entryPoints: { barWidget: "BarWidget.qml" }
+    }, false),
+    record("x.there", {
+      schemaVersion: 1, id: "x.there", name: "There", version: "1.0.0",
+      kinds: ["bar-widget"], entryPoints: { barWidget: "BarWidget.qml" }
+    }, true),
+    // Missing `version`, and an unparseable defaultSection: the shell's own
+    // validateManifest refuses both, so the picker must not offer them.
+    record("x.noversion", {
+      schemaVersion: 1, id: "x.noversion", name: "No Version",
+      kinds: ["bar-widget"], entryPoints: { barWidget: "BarWidget.qml" }
+    }, true),
+    record("x.badsection", {
+      schemaVersion: 1, id: "x.badsection", name: "Bad Section", version: "1.0.0",
+      kinds: ["bar-widget"], entryPoints: { barWidget: "BarWidget.qml" },
+      barWidget: { defaultSection: "middle" }
+    }, true)
+  ]);
+  equal(Model.candidates(index, []).map(c => c.id), ["x.there"]);
+  equal(index["x.noversion"].problem, "missing-version");
+  equal(index["x.badsection"].problem, "bad-default-section");
+  // A resident that goes this way keeps its slot and says why, rather than
+  // disappearing out of the membership list.
+  equal(Model.resolveItem("x.gone", index).reason, "entry-point-missing");
+  equal(Model.resolveItem("x.gone", index).placeholder, true);
+  equal(Model.resolveItem("x.badsection", index).reason, "invalid-manifest");
+  equal(Model.prune([{ id: "x.gone" }], index).items.map(i => i.id), ["x.gone"]);
+});
+
+check("every picker row is an id barback add accepts", () => {
+  // The contract between the two surfaces: anything offered resolves.
+  for (const candidate of Model.candidates(INDEX, [], { disabled: [] }))
+    equal(Model.resolveItem(candidate.id, INDEX).ok, true, candidate.id);
+});
+
+check("moving a widget off the bar keeps the settings it had there", () => {
+  const defaults = { showTrack: true, maxLabelWidth: 180 };
+  // The layout entry the widget had on the bar: its own settings, plus the
+  // keys that are not settings at all.
+  const layoutEntry = { id: "ninepointlabs.spotify", section: "right", showTrack: false };
+  equal(Model.settingsForAdd(defaults, layoutEntry), { showTrack: false, maxLabelWidth: 180 });
+  // Off the bar already: defaults only, which is what add has always done.
+  equal(Model.settingsForAdd(defaults, {}), defaults);
+  equal(Model.settingsForAdd(defaults, null), defaults);
+  equal(Model.settingsForAdd(null, { units: "imperial" }), { units: "imperial" });
+  // `items` belongs to a drawer and is never a resident's setting.
+  equal(Model.settingsForAdd({}, { id: "x", items: [{ id: "y" }] }), {});
+});
+
+check("the empty chip says what it is for", () => {
+  equal(Model.chipTooltip([], 0), "Barback — the drawer is empty. Click to add a widget.");
+  equal(Model.chipTooltip([{ ok: true }], 0), "Barback — 1 widget in the drawer");
+  equal(Model.chipTooltip([{ ok: true }, { ok: false }], 2),
+    "Barback — 1 widget in the drawer, 1 unavailable · 2 signalling");
 });
 
 console.log("\nshell.json reading");
