@@ -233,6 +233,33 @@ function mergeItemSettings(items, id, patch) {
   return list
 }
 
+// ------------------------------------------------------- hosted settings
+
+// Settings keys widgets in the wild use to decide whether to paint a text
+// label next to their icon: spotify's showTrack, upcoming's showNext,
+// fastmail-calendar's showTime. Expanded, a text-bearing resident makes the
+// drawer wide, so the per-item `compact` toggle turns these off. A widget
+// that has never heard of a key ignores it — settings are free-form and
+// BarWidget.setting() falls back to its own default — so this costs nothing
+// where it does not apply.
+var COMPACT_KEYS = ["showTrack", "showNext", "showTime", "showLabel", "showText", "showTitle"]
+
+// What Barback actually injects as the hosted widget's `settings`. Barback
+// owns this object: the item's stored settings, plus the compact overlay when
+// the item asks for it.
+function hostedSettings(settings, compact) {
+  var out = {}
+  var key
+  if (isPlainObject(settings)) for (key in settings) out[key] = settings[key]
+  if (compact === true) {
+    out.compact = true
+    for (var i = 0; i < COMPACT_KEYS.length; i++) {
+      if (out[COMPACT_KEYS[i]] === undefined) out[COMPACT_KEYS[i]] = false
+    }
+  }
+  return out
+}
+
 // --------------------------------------------------------------- residents
 
 function resolveItem(item, index) {

@@ -290,6 +290,18 @@ check("mergeItemSettings folds updateEntryInline into one resident only", () => 
   ]);
 });
 
+check("hostedSettings applies the compact overlay without clobbering choices", () => {
+  equal(Model.hostedSettings({ defaultTab: "search" }, false), { defaultTab: "search" });
+  equal(Model.hostedSettings({ defaultTab: "search" }, true), {
+    defaultTab: "search", compact: true,
+    showTrack: false, showNext: false, showTime: false,
+    showLabel: false, showText: false, showTitle: false
+  });
+  // An explicit setting wins over the compact default.
+  equal(Model.hostedSettings({ showTrack: true }, true).showTrack, true);
+  equal(Model.hostedSettings(null, false), {});
+});
+
 check("candidates exclude stock widgets, backups, services and self", () => {
   equal(Model.candidates(INDEX, [{ id: "ninepointlabs.spotify" }]).map(c => c.id), [
     "com.omastorm.radar", "ninepointlabs.spotify", "tim.omostrich", "tim.ring-cameras", "tim.theme-rotate"
