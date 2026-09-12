@@ -36,6 +36,7 @@ BarWidget {
   readonly property var items: Model.normalizeItems(setting("items", []))
   readonly property bool expandOnHover: setting("expandOnHover", true) === true
   readonly property bool showCount: setting("showCount", true) === true
+  readonly property bool escToClose: setting("escToClose", true) === true
 
   // ------------------------------------------------------ plugin scanning
 
@@ -498,8 +499,12 @@ BarWidget {
   // focus-primed layer surface omarchy's keyboard-driven bar panels use —
   // brief Exclusive to acquire focus on map, then OnDemand — and drops it
   // again the moment the drawer unpins. Hovering never takes focus.
+  //
+  // Set `escToClose: false` in the drawer's entry to drop the surface
+  // entirely; the drawer then closes by clicking the chip again, and nothing
+  // Barback does can ever take focus from the window you are typing in.
   Loader {
-    active: root.pinned
+    active: root.pinned && root.escToClose
     sourceComponent: escCatcher
   }
 

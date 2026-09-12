@@ -224,6 +224,14 @@ fi
   && ok "no resident asked the bar to run a command" \
   || info "residents asked bar.run to run: $(jq -c '[.facadeCalls[]|select(.call=="run")|.detail]' "$RESULT")"
 
+if [[ $(jqr '.vertical') == true ]]; then
+  if jq -e '[.residents[] | select(.mounted) | .shimVertical] | length > 0 and all' "$RESULT" >/dev/null; then
+    ok "vertical: true reached every mounted resident's shim"
+  else
+    bad "vertical: true reached every resident" "$(jq -c '[.residents[]|select(.mounted)|{id,shimVertical}]' "$RESULT")"
+  fi
+fi
+
 echo
 echo "residents"
 

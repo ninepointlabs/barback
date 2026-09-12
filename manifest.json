@@ -21,7 +21,8 @@
     "defaults": {
       "items": [],
       "expandOnHover": true,
-      "showCount": true
+      "showCount": true,
+      "escToClose": true
     },
     "schema": [
       {
@@ -34,6 +35,12 @@
         "key": "showCount",
         "type": "boolean",
         "label": "Show a count on the collapsed chip",
+        "defaultValue": true
+      },
+      {
+        "key": "escToClose",
+        "type": "boolean",
+        "label": "Close a pinned drawer with Esc (takes keyboard focus while pinned)",
         "defaultValue": true
       }
     ]

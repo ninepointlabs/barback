@@ -1,0 +1,337 @@
+#!/bin/bash
+
+# barback — membership list for the Barback bar drawer.
+#
+#   barback list [--json]                 residents, their ids, whether each resolved
+#   barback add <plugin-id> [--compact]   park it: drop its layout entry, add to items[]
+#   barback remove <plugin-id>            eject: back off the bar, still installed
+#   barback clear                         eject everything
+#   barback probe [--json]                re-check each resident resolves to a live entry point
+#
+# Eject and uninstall are two different things and are never conflated here.
+# `barback remove` leaves the drawer and nothing else: the plugin stays
+# installed and its folder is untouched. Deleting a plugin is Barkeep's job,
+# with its own confirmation. This script never calls `omarchy plugin remove`.
+#
+# Every write goes through the shared config helper that omarchy-bar itself
+# sources, so shell.json is replaced atomically and the running shell is told
+# to reload it. That helper installs an EXIT trap, so each commit runs in a
+# subshell. There is no `omarchy bar remove <id>` — the stock bar group is
+# use/reset/defaults/position/transparent/put/move/set — so taking a widget
+# off the bar means deleting its entry from the layout array through the same
+# helper.
+
+set -uo pipefail
+
+SELF_ID="ninepointlabs.barback"
+PLUGINS_DIR="$HOME/.config/omarchy/plugins"
+SHELL_CONFIG="$HOME/.config/omarchy/shell.json"
+SHELL_DEFAULTS="${OMARCHY_PATH:-/usr/share/omarchy}/config/omarchy/shell.json"
+SECTIONS=(left center right)
+
+die() { echo "barback: $*" >&2; exit 1; }
+
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+usage() {
+  sed -n '3,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# Same rule the stock CLI applies before an id reaches any command.
+valid_id() {
+  [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $1 != *..* ]]
+}
+
+config_file() {
+  if [[ -s $SHELL_CONFIG ]]; then printf '%s\n' "$SHELL_CONFIG"
+  else printf '%s\n' "$SHELL_DEFAULTS"; fi
+}
+
+read_config() {
+  jq -c '.' "$(config_file)" 2>/dev/null || echo '{}'
+}
+
+# ------------------------------------------------------------------ catalog
+
+# Rebuilt from disk, the same scan the shell's PluginRegistry runs. `*/` never
+# matches a dot-directory, which is why an `omarchy plugin remove` backup —
+# this box has three — can never be resolved into the drawer.
+catalog() {
+  local sub id
+  {
+    if [[ -d $PLUGINS_DIR ]]; then
+      for sub in "$PLUGINS_DIR"/*/; do
+        sub="${sub%/}"
+        [[ -f $sub/manifest.json ]] || continue
+        jq -c --arg dir "${sub##*/}" --arg path "$sub" \
+          '{dir: $dir, path: $path, manifest: .}' "$sub/manifest.json" 2>/dev/null
+      done
+    fi
+  } | jq -sc '
+    map(select(
+      (.manifest | type) == "object"
+      and .manifest.schemaVersion == 1
+      and ((.manifest.id // "") | test("^[A-Za-z0-9][A-Za-z0-9._-]*$"))
+      and ((.manifest.id // "") | contains("..") | not)
+      and ((.manifest.id // "") | startswith("omarchy.") | not)))
+    # Keyed by manifest id, not by folder name: two of the plugins installed
+    # here declare an id their folder does not match.
+    | map({ (.manifest.id): {
+        id: .manifest.id,
+        dir: .dir,
+        path: .path,
+        kinds: (.manifest.kinds // []),
+        entryPoint: (.manifest.entryPoints.barWidget // ""),
+        defaults: (.manifest.barWidget.defaults // {}),
+        displayName: (.manifest.barWidget.displayName // .manifest.name // .manifest.id)
+      }})
+    | add // {}'
+}
+
+JQ_HELPERS='
+  def eid: if type == "object" then (.id // "") else tostring end;
+  def resolve($catalog; $self):
+    . as $id
+    | ($catalog[$id] // null) as $p
+    | if $id == $self then { id: $id, ok: false, reason: "self" }
+      elif ($id | startswith("omarchy.")) then { id: $id, ok: false, reason: "reserved" }
+      elif $p == null then { id: $id, ok: false, reason: "missing" }
+      elif (($p.kinds | index("bar-widget")) == null) then
+        { id: $id, ok: false, reason: "not-a-bar-widget", dir: $p.dir, displayName: $p.displayName }
+      elif ($p.entryPoint == "" or ($p.entryPoint | startswith("/")) or ($p.entryPoint | contains(".."))) then
+        { id: $id, ok: false, reason: "no-entry-point", dir: $p.dir, displayName: $p.displayName }
+      else
+        { id: $id, ok: true, reason: "ok", dir: $p.dir, displayName: $p.displayName,
+          entryPoint: ($p.path + "/" + $p.entryPoint) }
+      end;
+'
+
+# Barback'"'"'s own layout entry, and the residents inside it.
+drawer_json() {
+  local config="$1"
+  jq -c "$JQ_HELPERS"'
+    . as $c
+    | [ "left", "center", "right" ]
+    | map(. as $s | ($c.bar.layout[$s] // []) | to_entries
+          | map(select(.value | eid == "'"$SELF_ID"'") | { section: $s, index: .key, entry: .value }))
+    | add
+    | if length == 0 then { found: false, items: [] }
+      else (.[0] | { found: true, section: .section, index: .index,
+                     items: ((.entry.items // []) | map(if type == "object" then . else { id: ., settings: {} } end)) })
+      end' <<<"$config"
+}
+
+resolved_json() {
+  local config catalog drawer
+  config="$(read_config)"
+  catalog="$(catalog)"
+  drawer="$(drawer_json "$config")"
+  jq -nc "$JQ_HELPERS"'
+    $drawer as $d | $catalog as $cat | $config as $c
+    | { found: $d.found, section: ($d.section // ""),
+        residents: ($d.items | map(
+          . as $item
+          | ($item.id | resolve($cat; "'"$SELF_ID"'"))
+          + { settings: ($item.settings // {}), compact: ($item.compact == true),
+              alsoInLayout: ([ "left", "center", "right" ]
+                | map(. as $s | (($c.bar.layout[$s] // []) | map(eid) | index($item.id)) != null)
+                | any) })) }' \
+    --argjson drawer "$drawer" --argjson catalog "$catalog" --argjson config "$config"
+}
+
+# ------------------------------------------------------------------- writing
+
+# One jq program, applied to the source config, written atomically, then the
+# running shell is told to reload. Subshell because the helper traps EXIT.
+apply() {
+  (
+    source omarchy-shell-config || exit 1
+    commit "$NORMALIZE | $JQ_HELPERS $1" "${@:2}"
+  )
+}
+
+require_drawer() {
+  local section
+  section="$(jq -r '.section // ""' <<<"$1")"
+  if [[ $(jq -r '.found' <<<"$1") != true ]]; then
+    die "Barback is not on the bar, so there is no drawer to fill.
+       Put it there first:  omarchy bar put $SELF_ID --section right"
+  fi
+  printf '%s\n' "$section"
+}
+
+# ------------------------------------------------------------------ commands
+
+cmd_list() {
+  local json state
+  state="$(resolved_json)"
+  if [[ ${1:-} == --json ]]; then
+    printf '%s\n' "$(jq '.' <<<"$state")"
+    return 0
+  fi
+
+  if [[ $(jq -r '.found' <<<"$state") != true ]]; then
+    echo "Barback is not on the bar. Put it there with:"
+    echo "  omarchy bar put $SELF_ID --section right"
+    return 0
+  fi
+
+  local count
+  count=$(jq -r '.residents | length' <<<"$state")
+  if [[ $count -eq 0 ]]; then
+    echo "The drawer is empty (section: $(jq -r '.section' <<<"$state")). It takes no space on the bar."
+    return 0
+  fi
+
+  printf 'Drawer (%s), %s resident(s):\n' "$(jq -r '.section' <<<"$state")" "$count"
+  while IFS=$'\t' read -r id ok reason name compact also; do
+    local mark detail=""
+    [[ $ok == true ]] && mark="ok " || mark="!! "
+    [[ $ok == true ]] || detail=" — $(reason_text "$reason")"
+    [[ $compact == true ]] && detail+=" [compact]"
+    [[ $also == true ]] && detail+=" [WARNING: still has its own bar entry]"
+    printf '  %s%-34s %s%s\n' "$mark" "$id" "$name" "$detail"
+  done < <(jq -r '.residents[] | [.id, (.ok|tostring), .reason, (.displayName // .id), (.compact|tostring), (.alsoInLayout|tostring)] | @tsv' <<<"$state")
+}
+
+reason_text() {
+  case "$1" in
+    ok) echo "resolved" ;;
+    missing) echo "not installed" ;;
+    self) echo "cannot hold itself" ;;
+    reserved) echo "reserved omarchy.* id" ;;
+    not-a-bar-widget) echo "not a bar widget" ;;
+    no-entry-point) echo "no barWidget entry point" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+cmd_probe() {
+  local state bad
+  state="$(resolved_json)"
+  if [[ ${1:-} == --json ]]; then
+    jq '{ section: .section, residents: [.residents[] | { id, ok, reason, entryPoint: (.entryPoint // "") }] }' <<<"$state"
+  else
+    while IFS=$'\t' read -r id ok reason entry; do
+      if [[ $ok == true ]]; then
+        printf '  ok   %-34s %s\n' "$id" "$entry"
+      else
+        printf '  FAIL %-34s %s\n' "$id" "$(reason_text "$reason")"
+      fi
+    done < <(jq -r '.residents[] | [.id, (.ok|tostring), .reason, (.entryPoint // "")] | @tsv' <<<"$state")
+  fi
+  bad=$(jq -r '[.residents[] | select(.ok | not)] | length' <<<"$state")
+  [[ $bad -eq 0 ]]
+}
+
+cmd_add() {
+  local id="${1:-}" compact=false
+  shift || true
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --compact) compact=true ;;
+      *) die "unknown option '$1'" ;;
+    esac
+    shift
+  done
+
+  [[ -n $id ]] || die "add needs a plugin id"
+  valid_id "$id" || die "invalid plugin id '$id'"
+  [[ $id != "$SELF_ID" ]] || die "Barback cannot hold itself"
+  [[ $id != omarchy.* ]] || die "stock omarchy.* widgets stay on the bar; the drawer is for third-party plugins"
+
+  local state section resolution
+  state="$(resolved_json)"
+  section="$(require_drawer "$state")" || exit 1
+
+  resolution="$(jq -nc "$JQ_HELPERS"'$id | resolve($catalog; "'"$SELF_ID"'")' \
+    --arg id "$id" --argjson catalog "$(catalog)")"
+  if [[ $(jq -r '.ok' <<<"$resolution") != true ]]; then
+    die "cannot park $id: $(reason_text "$(jq -r '.reason' <<<"$resolution")")"
+  fi
+
+  if [[ $(jq -r --arg id "$id" '[.residents[] | select(.id == $id)] | length' <<<"$state") -gt 0 ]]; then
+    echo "$id is already in the drawer"
+    return 0
+  fi
+
+  local entry
+  entry="$(jq -nc --arg id "$id" --argjson compact "$compact" \
+    --argjson defaults "$(jq -c --arg id "$id" '.[$id].defaults // {}' <<<"$(catalog)")" '
+    { id: $id, settings: $defaults } + (if $compact then { compact: true } else {} end)')"
+
+  # Drop every layout entry the resident owns, then append it to items[].
+  # Its only home is now Barback's entry.
+  apply '
+    def strip($x): map(select(eid != $x));
+    .bar.layout.left   |= strip($id)
+    | .bar.layout.center |= strip($id)
+    | .bar.layout.right  |= strip($id)
+    | .bar.layout[$section] |= map(
+        if eid == $self
+        then .section = $section
+             | .items = (((.items // []) | map(select(eid != $id))) + [$entry])
+        else . end)
+  ' --arg id "$id" --arg self "$SELF_ID" --arg section "$section" --argjson entry "$entry" \
+    >/dev/null || die "could not update shell.json"
+
+  echo "parked $id in the drawer"
+}
+
+cmd_remove() {
+  local id="${1:-}"
+  [[ -n $id ]] || die "remove needs a plugin id"
+  valid_id "$id" || die "invalid plugin id '$id'"
+
+  local state
+  state="$(resolved_json)"
+  require_drawer "$state" >/dev/null || exit 1
+
+  if [[ $(jq -r --arg id "$id" '[.residents[] | select(.id == $id)] | length' <<<"$state") -eq 0 ]]; then
+    echo "$id is not in the drawer"
+    return 0
+  fi
+
+  # Eject only. The plugin stays installed; it is now off the bar, which is
+  # the state Barkeep already lists as "Off the bar".
+  apply '
+    def drop($x): map(if eid == $self then .items = (((.items // []) | map(select(eid != $x)))) else . end);
+    .bar.layout.left   |= drop($id)
+    | .bar.layout.center |= drop($id)
+    | .bar.layout.right  |= drop($id)
+  ' --arg id "$id" --arg self "$SELF_ID" >/dev/null || die "could not update shell.json"
+
+  echo "ejected $id from the drawer (still installed, now off the bar)"
+}
+
+cmd_clear() {
+  local state count
+  state="$(resolved_json)"
+  require_drawer "$state" >/dev/null || exit 1
+  count=$(jq -r '.residents | length' <<<"$state")
+  if [[ $count -eq 0 ]]; then
+    echo "the drawer is already empty"
+    return 0
+  fi
+
+  apply '
+    def empty_items: map(if eid == $self then .items = [] else . end);
+    .bar.layout.left   |= empty_items
+    | .bar.layout.center |= empty_items
+    | .bar.layout.right  |= empty_items
+  ' --arg self "$SELF_ID" >/dev/null || die "could not update shell.json"
+
+  echo "ejected $count resident(s); all of them are still installed"
+}
+
+# ---------------------------------------------------------------------- main
+
+case "${1:-}" in
+  list)   shift; cmd_list "$@" ;;
+  add)    shift; cmd_add "$@" ;;
+  remove) shift; cmd_remove "$@" ;;
+  clear)  shift; cmd_clear "$@" ;;
+  probe)  shift; cmd_probe "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command '$1' (try: list, add, remove, clear, probe)" ;;
+esac
