@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "ninepointlabs.barback",
+  "name": "Barback",
+  "version": "0.1.0",
+  "description": "A drawer for the Omarchy bar. One chip holds several third-party bar widgets, so a stack of plugins you are trialling takes a single slot instead of one each.",
+  "author": "Nine Point Labs",
+  "license": "MIT",
+  "homepage": "https://github.com/ninepointlabs/barback",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Barback",
+    "description": "Holds other bar widgets in one collapsible slot. Hover to expand, click to pin open.",
+    "category": "System",
+    "aliases": ["barback", "drawer", "widgets"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "items": [],
+      "expandOnHover": true,
+      "showCount": true
+    },
+    "schema": [
+      {
+        "key": "expandOnHover",
+        "type": "boolean",
+        "label": "Expand the drawer on hover",
+        "defaultValue": true
+      },
+      {
+        "key": "showCount",
+        "type": "boolean",
+        "label": "Show a count on the collapsed chip",
+        "defaultValue": true
+      }
+    ]
+  }
+}
