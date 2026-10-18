@@ -376,8 +376,12 @@ BarWidget {
   }
 
   readonly property bool autoExpand: Model.wantsAutoExpand(root.residents, root.badges)
+  // The chip's MouseArea owns hover over the glyph, so HoverHandler on the
+  // root often never sees it. Tooltip hover is the same pointer, and it is
+  // what actually fires when Tim points at the chip.
+  readonly property bool pointerOnDrawer: root.hovered || chip.tooltipHovered
   readonly property bool expanded: root.residents.length > 0
-    && (root.pinned || residentPopoutOpen || autoExpand || (root.expandOnHover && root.hovered))
+    && (root.pinned || residentPopoutOpen || autoExpand || (root.expandOnHover && root.pointerOnDrawer))
 
   property real revealProgress: expanded ? 1 : 0
   // Matches omarchy.tray's drawer transition so the two read as one gesture.
@@ -420,14 +424,14 @@ BarWidget {
 
   // ------------------------------------------------------------- the chip
 
-  WidgetButton {
+  BarIconButton {
     id: chip
     bar: root.bar
     x: 0
     y: 0
     width: implicitWidth
     height: implicitHeight
-    text: root.chipText
+    text: root.chipGlyph
     active: root.pinned || root.menuOpen || root.pickerOpen
     tooltipText: root.chipTooltipText
     // Quiet until pointed at, so an empty drawer is discoverable without
@@ -443,6 +447,22 @@ BarWidget {
       else root.pinned = !root.pinned
     }
 
+    // ASCII count, not a Nerd Font suffix. Parking a widget takes it off the
+    // bar; if this count is missing the add looks like a delete.
+    Text {
+      visible: root.chipCountText !== ""
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      anchors.rightMargin: Style.space(1)
+      anchors.bottomMargin: Style.space(1)
+      textFormat: Text.PlainText
+      text: root.chipCountText
+      color: chip.foreground
+      font.family: chip.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      z: 2
+    }
+
     // Attention dot. Badge only, never auto-expand, unless a resident asked
     // for auto-expand in its own settings.
     Rectangle {
@@ -453,17 +473,15 @@ BarWidget {
       color: root.bar ? root.bar.urgent : Color.urgent
       x: parent.width - width - Style.space(3)
       y: Style.space(3)
+      z: 3
     }
   }
 
   readonly property string chipTooltipText: Model.chipTooltip(root.residents, root.badgeTotal)
   readonly property string chipGlyph: "󰀱"
-  readonly property string chipText: {
-    var live = 0
-    for (var i = 0; i < residents.length; i++) if (residents[i].ok) live++
-    if (!showCount || expanded || live <= 0) return chipGlyph
-    return chipGlyph + " " + live
-  }
+  readonly property string chipCountText: Model.chipLabel(root.residents, root.showCount, root.expanded)
+  // Harness and tests read this: glyph plus ASCII count while collapsed.
+  readonly property string chipText: root.chipCountText === "" ? root.chipGlyph : (root.chipGlyph + " " + root.chipCountText)
 
   // ---------------------------------------------------------- the drawer
 

@@ -548,13 +548,28 @@ function wantsAutoExpand(residents, badges) {
 // chip that says what it is for, and opens the picker when clicked.
 var EMPTY_TOOLTIP = "Barback — the drawer is empty. Click to add a widget."
 
-function chipTooltip(residents, badge) {
+function liveCount(residents) {
   var live = 0
+  if (!residents) return 0
+  for (var i = 0; i < residents.length; i++) if (residents[i] && residents[i].ok) live++
+  return live
+}
+
+// Collapsed populated chip: ASCII count only. A Nerd Font glyph with no
+// count looks empty when the font misses, which is exactly how adding a
+// widget disappeared off Tim's live bar.
+function chipLabel(residents, showCount, expanded) {
+  if (showCount !== true || expanded === true) return ""
+  var live = liveCount(residents)
+  return live > 0 ? String(live) : ""
+}
+
+function chipTooltip(residents, badge) {
+  var live = liveCount(residents)
   var broken = 0
   if (!residents || residents.length === 0) return EMPTY_TOOLTIP
   for (var i = 0; i < residents.length; i++) {
-    if (residents[i].ok) live++
-    else broken++
+    if (!(residents[i] && residents[i].ok)) broken++
   }
   var text = "Barback — " + live + (live === 1 ? " widget" : " widgets") + " in the drawer"
   if (broken > 0) text += ", " + broken + " unavailable"
