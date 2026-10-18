@@ -165,7 +165,7 @@ ShellRoot {
     },
     function () {
       var version = harness.find("aboutVersion")
-      harness.check("shows the manifest version", !!version && version.text === "Version 0.1.0", version ? version.text : "")
+      harness.check("shows the manifest version", !!version && version.text === "Version @MANIFEST_VERSION@", version ? version.text : "")
       var madeBy = harness.find("aboutMadeBy")
       harness.check("made by Nine Point Labs", !!madeBy && madeBy.text === "Nine Point Labs")
       var privacy = harness.find("aboutPrivacy")
@@ -176,7 +176,7 @@ ShellRoot {
       harness.check("Email and Copy buttons are there", !!harness.find("aboutEmail") && !!harness.find("aboutCopyEmail")
         && !!harness.find("aboutCopyDetails"))
       var view = harness.find("aboutView")
-      harness.check("version details for the support email", !!view && /^Barback 0\.1\.0\nQuickshell 0\.\d+, Qt 6\.\d+\n/.test(view.details),
+      harness.check("version details for the support email", !!view && /^Barback @MANIFEST_VERSION_RE@\nQuickshell 0\.\d+, Qt 6\.\d+\n/.test(view.details),
         view ? JSON.stringify(view.details) : "")
       harness.check("license text hidden at first", harness.find("aboutLicenseText").visible === false)
       harness.find("aboutLicense").clicked()

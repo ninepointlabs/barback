@@ -35,6 +35,9 @@ mkdir -p "$PLUGINS/ninepointlabs.barback/bin" "$SCRATCH/home/.cache" "$SCRATCH/h
 cp -r "$SHELL_SRC/Ui" "$SCRATCH/root/Ui"
 cp -r "$SHELL_SRC/Commons" "$SCRATCH/root/Commons"
 cp "$ROOT/tests/qml/AboutHarness.qml" "$SCRATCH/root/shell.qml"
+# The expected version follows manifest.json, so a release bump doesn't break it.
+version="$(jq -r .version "$ROOT/manifest.json")"
+sed -i "s/@MANIFEST_VERSION@/$version/g; s/@MANIFEST_VERSION_RE@/${version//./\\\\.}/g" "$SCRATCH/root/shell.qml"
 cp "$ROOT/manifest.json" "$ROOT/BarWidget.qml" "$ROOT/Model.js" "$ROOT/About.js" "$ROOT/AboutView.qml" \
   "$ROOT/LICENSE" "$PLUGINS/ninepointlabs.barback/"
 cp "$ROOT/bin/barback" "$PLUGINS/ninepointlabs.barback/bin/barback"
