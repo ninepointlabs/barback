@@ -314,6 +314,15 @@ added_id=$(grep -m1 '^barback add ' "$CALLS" | awk '{print $3}')
 echo
 echo "the populated drawer"
 
+# Live bug: parking a widget takes it off the bar, then the collapsed chip
+# painted a Nerd Font glyph and no count, so the add looked like a delete.
+chip_text=$(jqr '.barback.chipText')
+if grep -q '[0-9]' <<<"$chip_text"; then
+  ok "the collapsed populated chip shows a count ($chip_text)"
+else
+  bad "the collapsed populated chip shows a count" "chipText='$chip_text' — no ASCII count, so a missing glyph looks empty"
+fi
+
 [[ $(jq '[.facadeCalls[] | select(.call == "run")] | length' "$RESULT") -eq 0 ]] \
   && ok "no resident asked the bar to run a command" \
   || info "residents asked bar.run to run: $(jq -c '[.facadeCalls[]|select(.call=="run")|.detail]' "$RESULT")"

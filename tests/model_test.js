@@ -445,6 +445,17 @@ check("the empty chip says what it is for", () => {
     "Barback — 1 widget in the drawer, 1 unavailable · 2 signalling");
 });
 
+check("a populated collapsed chip keeps a visible count", () => {
+  // Live bug: adding Upcoming took it off the bar, then the collapsed chip
+  // looked empty because it painted a Nerd Font glyph with no count. The
+  // count is ASCII so it stays visible even if the glyph font misses.
+  equal(Model.chipLabel([], true, false), "");
+  equal(Model.chipLabel([{ ok: true }], true, false), "1");
+  equal(Model.chipLabel([{ ok: true }, { ok: true }, { ok: false }], true, false), "2");
+  equal(Model.chipLabel([{ ok: true }], true, true), "");
+  equal(Model.chipLabel([{ ok: true }], false, false), "");
+});
+
 console.log("\nshell.json reading");
 
 const CONFIG = {
