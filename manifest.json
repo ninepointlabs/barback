@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "ninepointlabs.barback",
   "name": "Barback",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A drawer for the Omarchy bar. One chip holds several third-party bar widgets, so a stack of plugins you are trialling takes a single slot instead of one each.",
   "author": "Nine Point Labs",
   "license": "MIT",
