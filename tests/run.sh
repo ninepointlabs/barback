@@ -3,8 +3,10 @@
 # Every Barback test, in order of how much it needs from the machine.
 #
 #   model  — node only, hermetic
+#   about  — node only, reads the repo (the About page's facts and privacy)
 #   cli    — the real omarchy-shell-config against a scratch HOME, mocked reload
-#   compat — the real widget hosting the real installed plugins, sandboxed
+#   compat — the real widget hosting the real installed plugins, sandboxed,
+#            and the About page in the real widget with a scratch HOME
 #
 # Nothing here installs Barback, writes to the live shell.json, or restarts
 # the shell. Pass --no-compat to skip the run that needs quickshell, a
@@ -32,8 +34,10 @@ stage() {
 stage "manifest validation" omarchy plugin validate "$ROOT"
 stage "syntax" bash -c 'bash -n "$1/bin/barback" && bash -n "$1/install.sh"' _ "$ROOT"
 stage "model (node)" node "$ROOT/tests/model_test.js"
+stage "about (node)" node "$ROOT/tests/about_test.js"
 stage "cli" bash "$ROOT/tests/cli_test.sh"
 if [[ $RUN_COMPAT -eq 1 ]]; then
+  stage "about page (qml)" bash "$ROOT/tests/about_qml_test.sh"
   stage "real-plugin compatibility (horizontal bar)" \
     env BARBACK_POSITION=top bash "$ROOT/tests/qml_compat_test.sh"
   # Vertical bars are the case where `vertical: true` has to reach every

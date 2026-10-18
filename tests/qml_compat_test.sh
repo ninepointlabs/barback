@@ -73,6 +73,8 @@ cp "$ROOT/tests/qml/Harness.qml" "$SCRATCH/root/shell.qml"
 # bin/) with a logger, so the add is proved by its argv and writes nothing.
 mkdir -p "$PLUGINS/ninepointlabs.barback/bin"
 cp "$ROOT/manifest.json" "$ROOT/BarWidget.qml" "$ROOT/Model.js" "$PLUGINS/ninepointlabs.barback/"
+# The About page (AboutView.qml) and the LICENSE it shows.
+cp "$ROOT/About.js" "$ROOT/AboutView.qml" "$ROOT/LICENSE" "$PLUGINS/ninepointlabs.barback/"
 cp "$ROOT/bin/barback" "$PLUGINS/ninepointlabs.barback/bin/barback"
 
 # Residents under test. The brief asks for at least one plugin that reads

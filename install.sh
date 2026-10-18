@@ -43,7 +43,7 @@ done
 mkdir -p "$PLUGINS_DIR"
 
 # Every runtime asset. A missing file here is the classic blank-chip bug.
-ASSETS=(manifest.json BarWidget.qml Model.js README.md LICENSE)
+ASSETS=(manifest.json BarWidget.qml Model.js About.js AboutView.qml README.md LICENSE)
 
 # Stage beside the live directory so the final move is a rename on the same
 # filesystem, not a copy that can be interrupted half way.

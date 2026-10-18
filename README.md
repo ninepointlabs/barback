@@ -17,7 +17,7 @@ render and nothing more.
   residents along the bar axis, the same 600ms feel as `omarchy.tray`.
 - **Click pins it open**, `Esc` closes, and clicking away closes it too.
 - **Right-click for the menu**: eject a resident, *Add a widget…*, *Manage in
-  Barkeep…*, *Eject all*.
+  Barkeep…*, *Eject all*, and 󰋽 for [About](#about).
 - **Vertical bars** get `vertical: true` passed through, so hosted widgets
   pick their own compact forms for free.
 
@@ -90,6 +90,17 @@ mounted as one. If you write another drawer-shaped widget, set it.
 Both of these — the visible empty chip and the picker itself — are deliberate
 departures from the design spec, authorised by Tim on 2026-09-12. See
 [DEVIATIONS.md](DEVIATIONS.md).
+
+## About
+
+The 󰋽 button at the top right of the chip's right-click menu, or of the
+*Add a widget* picker, opens **About** in the menu: the version (read from
+`manifest.json`), the license (*Read it* shows the full text in place), Nine
+Point Labs, when Barback was created, what it does with your data, and the
+support address, [help@ninepointlabs.com](mailto:help@ninepointlabs.com), with
+*Email* (your mail app, with the version details filled in), *Copy* and *Copy
+version details* buttons. *Back* (or `Esc`) returns to the menu; closing the
+menu leaves About.
 
 ## The CLI
 
@@ -241,6 +252,14 @@ tests/run.sh
   nested drawer, a Barback clone, a plugin whose QML file is gone and a disabled
   plugin. The real `omarchy-shell-config` does the writing; only `$HOME` and the
   reload are isolated.
+- `tests/about_test.js` — the About page's facts checked against
+  `manifest.json`, `LICENSE` and the first commit, the prefilled support email,
+  and that the privacy statement names every way the shipped code reaches the
+  network (it fails if a host or network command is added without being named
+  there).
+- `tests/about_qml_test.sh` — the real `BarWidget.qml` under `qs` with a
+  scratch `HOME`: opens About from the menu's 󰋽 button, checks what it shows,
+  Back, and that closing the menu leaves it, and fails on any QML warning.
 - `tests/qml_compat_test.sh` — the real `BarWidget.qml` hosting the real
   installed plugins, with no live side effects: scratch `HOME`, a copied
   plugins directory, every helper binary the residents spawn replaced by a
