@@ -498,14 +498,26 @@ BarWidget {
   readonly property string popupFontFamily: root.bar ? root.bar.fontFamily : Style.font.family
   readonly property color popupUrgent: root.bar ? root.bar.urgent : Color.urgent
 
+  // The menu's About page (AboutView.qml), opened by the 󰋽 button in the menu
+  // or picker header. Back or Esc returns to the menu; closing the menu
+  // leaves it.
+  property bool aboutOpen: false
+  onMenuOpenChanged: if (!root.menuOpen) root.aboutOpen = false
+
+  function openAbout() {
+    root.pickerOpen = false
+    root.menuOpen = true
+    root.aboutOpen = true
+  }
+
   PopupCard {
     id: menu
     anchorItem: chip
     owner: root
     bar: root.bar
     open: root.menuOpen
-    contentWidth: menu.fittedContentWidth(Style.space(240))
-    contentHeight: menu.fittedContentHeight(menuColumn.implicitHeight)
+    contentWidth: menu.fittedContentWidth(Style.space(root.aboutOpen ? 340 : 240))
+    contentHeight: menu.fittedContentHeight(root.aboutOpen ? aboutView.implicitHeight : menuColumn.implicitHeight)
 
     readonly property color foreground: root.popupForeground
     readonly property string fontFamily: root.popupFontFamily
@@ -513,6 +525,7 @@ BarWidget {
     Column {
       id: menuColumn
       anchors.fill: parent
+      visible: !root.aboutOpen
       spacing: Style.space(6)
 
       Row {
@@ -578,6 +591,34 @@ BarWidget {
         onActivated: { root.close(); root.ejectAll() }
       }
     }
+
+    AboutButton { visible: !root.aboutOpen }
+
+    AboutView {
+      id: aboutView
+      objectName: "aboutView"
+      anchors.fill: parent
+      visible: root.aboutOpen
+      foreground: root.popupForeground
+      fontFamily: root.popupFontFamily
+      glyph: root.chipGlyph
+      pluginDir: root.pluginDir
+      onBackRequested: root.aboutOpen = false
+    }
+  }
+
+  // 󰋽 at the right of a popup's header row: the way into About.
+  component AboutButton: PanelActionButton {
+    objectName: "aboutButton"
+    anchors.top: parent.top
+    anchors.right: parent.right
+    size: Style.space(18)
+    fontSize: Style.font.bodySmall
+    iconText: "󰋽"
+    tooltipText: "About Barback"
+    foreground: root.popupForeground
+    fontFamily: root.popupFontFamily
+    onClicked: root.openAbout()
   }
 
   // ------------------------------------------------------- the widget picker
@@ -697,6 +738,8 @@ BarWidget {
         onActivated: { root.close(); root.summonBarkeep() }
       }
     }
+
+    AboutButton {}
   }
 
   // Barback's shell facade is scoped to its own id, so it cannot summon
