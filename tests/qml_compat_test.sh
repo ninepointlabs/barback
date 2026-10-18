@@ -91,10 +91,14 @@ for dir in "${RESIDENT_DIRS[@]}"; do
 done
 
 # One hidden `omarchy plugin remove` backup, copied in so the dot-directory
-# rule is proved against a real one rather than a fixture.
+# rule is proved against a real one rather than a fixture. Skip a backup of a
+# plugin that is also in the sandbox (Barback itself, or a resident): its id
+# is rightly indexed from the live copy, so it can't show the backup was ignored.
+SANDBOX_IDS="$(jq -r '.id // empty' "$PLUGINS"/*/manifest.json 2>/dev/null)"
 BACKUP_DIR=""
 for candidate in "$LIVE_PLUGINS"/.*.bak.*; do
   [[ -d "$candidate" && -f "$candidate/manifest.json" ]] || continue
+  grep -qxF -- "$(jq -r '.id // ""' "$candidate/manifest.json")" <<<"$SANDBOX_IDS" && continue
   BACKUP_DIR="$(basename "$candidate")"
   rsync -a --exclude '.git' "$candidate/" "$PLUGINS/$BACKUP_DIR/"
   break
