@@ -8,6 +8,7 @@
 #   barback remove <plugin-id>            eject: back off the bar, still installed
 #   barback clear                         eject everything
 #   barback probe [--json]                re-check each resident resolves to a live entry point
+#   barback --version                     print the installed version
 #
 # Eject and uninstall are two different things and are never conflated here.
 # `barback remove` leaves the drawer and nothing else: the plugin stays
@@ -35,7 +36,22 @@ die() { echo "barback: $*" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
 usage() {
-  sed -n '3,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '3,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# manifest.json is the one place a release bumps. It sits beside bin/ in the
+# repo and in the installed plugin; the ~/.local/bin copy has no neighbour, so
+# it reads the installed plugin's.
+version() {
+  local here manifest
+  here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+  for manifest in "$here/../manifest.json" "$PLUGINS_DIR/$SELF_ID/manifest.json"; do
+    if [[ -f $manifest ]]; then
+      echo "barback $(jq -r '.version // "unknown"' "$manifest" 2>/dev/null || echo unknown)"
+      return 0
+    fi
+  done
+  echo "barback unknown (no manifest.json found)"
 }
 
 # Same rule the stock CLI applies before an id reaches any command.
@@ -50,6 +66,18 @@ config_file() {
 
 read_config() {
   jq -c '.' "$(config_file)" 2>/dev/null || echo '{}'
+}
+
+# A shell.json that is not a JSON object would otherwise read as `{}` and look
+# like "Barback is not on the bar". Say what is actually wrong, and leave the
+# file alone.
+check_config() {
+  local file
+  file="$(config_file)"
+  [[ -e $file ]] || return 0
+  jq -e 'type == "object"' "$file" >/dev/null 2>&1 \
+    || die "could not parse $file (it is not a valid JSON object); nothing was changed.
+       Fix the file, then try again."
 }
 
 # ------------------------------------------------------------------ catalog
@@ -245,6 +273,10 @@ reason_text() {
 cmd_probe() {
   local state bad
   state="$(resolved_json)"
+  if [[ $(jq -r '.found' <<<"$state") != true ]]; then
+    die "Barback is not on the bar, so there is no drawer to probe.
+       Put it there first:  omarchy bar put $SELF_ID --section right"
+  fi
   if [[ ${1:-} == --json ]]; then
     jq '{ section: .section, residents: [.residents[] | { id, ok, reason, entryPoint: (.entryPoint // "") }] }' <<<"$state"
   else
@@ -349,8 +381,7 @@ cmd_remove() {
   require_drawer "$state" >/dev/null || exit 1
 
   if [[ $(jq -r --arg id "$id" '[.residents[] | select(.id == $id)] | length' <<<"$state") -eq 0 ]]; then
-    echo "$id is not in the drawer"
-    return 0
+    die "$id is not in the drawer"
   fi
 
   # Eject only. The plugin stays installed; it is now off the bar, which is
@@ -388,11 +419,16 @@ cmd_clear() {
 # ---------------------------------------------------------------------- main
 
 case "${1:-}" in
+  list|add|remove|clear|probe) check_config ;;
+esac
+
+case "${1:-}" in
   list)   shift; cmd_list "$@" ;;
   add)    shift; cmd_add "$@" ;;
   remove) shift; cmd_remove "$@" ;;
   clear)  shift; cmd_clear "$@" ;;
   probe)  shift; cmd_probe "$@" ;;
   -h|--help|help|"") usage ;;
+  --version) version ;;
   *) die "unknown command '$1' (try: list, add, remove, clear, probe)" ;;
 esac

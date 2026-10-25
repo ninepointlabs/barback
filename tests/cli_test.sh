@@ -294,9 +294,13 @@ grep -q "still installed" <<<"$out" \
 grep -q "reloadConfig" "$RELOADS" \
   && ok "remove reloaded the shell too" || bad "remove reloaded the shell" "$(cat "$RELOADS")"
 
+before="$(cat "$CONFIG")"
 out="$(run remove example.alpha 2>&1)"
-grep -q "not in the drawer" <<<"$out" \
-  && ok "removing a non-resident is a no-op" || bad "removing a non-resident" "$out"
+if [[ $? -ne 0 ]] && grep -q "not in the drawer" <<<"$out" && [[ $(cat "$CONFIG") == "$before" ]]; then
+  ok "removing a non-resident fails, says so, and changes nothing"
+else
+  bad "removing a non-resident" "$out"
+fi
 
 run clear >/dev/null 2>&1
 [[ $(cfg '(.bar.layout.right[] | select(.id == "ninepointlabs.barback")).items | length') -eq 0 ]] \
@@ -318,6 +322,41 @@ if [[ $? -ne 0 ]] && grep -q "omarchy bar put ninepointlabs.barback" <<<"$out"; 
 else
   bad "add refuses with no drawer" "$out"
 fi
+
+out="$(run probe 2>&1)"
+if [[ $? -ne 0 ]] && grep -q "not on the bar" <<<"$out"; then
+  ok "probe fails, and says why, when Barback is not on the bar"
+else
+  bad "probe with no drawer" "$out"
+fi
+
+echo
+echo "a shell.json that does not parse"
+
+cp "$CONFIG" "$SCRATCH/good.json"
+printf '{ "bar": { broken\n' >"$CONFIG"
+cp "$CONFIG" "$SCRATCH/broken.json"
+for cmd in list probe "add example.alpha"; do
+  out="$(run $cmd 2>&1)"
+  if [[ $? -ne 0 ]] && grep -qF "could not parse $CONFIG" <<<"$out" && ! grep -q "not on the bar" <<<"$out"; then
+    ok "$cmd names the unparseable shell.json instead of saying Barback is not on the bar"
+  else
+    bad "$cmd on a broken shell.json" "$out"
+  fi
+done
+cmp -s "$CONFIG" "$SCRATCH/broken.json" \
+  && ok "a broken shell.json is left exactly as it was" \
+  || bad "a broken shell.json is left alone" "$(cat "$CONFIG")"
+cp "$SCRATCH/good.json" "$CONFIG"
+
+echo
+echo "--version"
+
+out="$(run --version 2>&1)"; rc=$?
+want="barback $(jq -r .version "$ROOT/manifest.json")"
+[[ $rc -eq 0 && $out == "$want" ]] \
+  && ok "--version prints the version from manifest.json" \
+  || bad "--version" "got '$out', want '$want'"
 
 echo
 echo "the live config was never touched"
