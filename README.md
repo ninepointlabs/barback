@@ -111,6 +111,7 @@ barback add <plugin-id> [--compact]   park it: drop its layout entry, keep its s
 barback remove <plugin-id>            eject: back off the bar, still installed
 barback clear                         eject everything
 barback probe [--json]                re-check each resident resolves to a live entry point
+barback --version                     print the installed version
 ```
 
 Every write goes through `omarchy-shell-config`, the same shared helper
